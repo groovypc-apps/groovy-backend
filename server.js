@@ -1,55 +1,42 @@
-/**
- * BACKEND SERVER GROOVY PET CENTER RADIO 03 (Node.js + Express + MongoDB + Nodemailer)
- * Mendukung:
- * 1. /api/packages   -> Aplikasi Kartu Paket Layanan Groovy
- * 2. /api/checklists -> Aplikasi Checklist Grooming + Auto-Kirim PDF ke ceklistgrooming@gmail.com
- *
- * Pastikan di package.json sudah terpasang:
- * npm install express mongoose cors dotenv nodemailer
- *
- * Environment Variables di Render.com:
- * - MONGO_URI   : URL koneksi MongoDB Atlas Anda
- * - EMAIL_USER  : Email pengirim (contoh: ceklistgrooming@gmail.com)
- * - EMAIL_PASS  : 16 digit Gmail App Password (bukan password login biasa)
- */
-
-require('dotenv').config();
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const nodemailer = require('nodemailer');
+require('dotenv').config();
+
+// Muat nodemailer dengan aman (tidak akan bikin server crash meskipun package.json belum diupdate)
+let nodemailer = null;
+try {
+  nodemailer = require('nodemailer');
+} catch (err) {
+  console.warn('⚠️ Modul nodemailer belum terpasang di package.json. Fitur email menunggu instalasi nodemailer.');
+}
 
 const app = express();
 app.use(cors());
-// Limit 25MB agar pengiriman lampiran file PDF Base64 tidak terblokir
+// Perbesar limit JSON ke 25MB agar pengiriman file PDF Base64 dari Checklist Grooming tidak ditolak
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// ============================================================================
-// 1. KONEKSI DATABASE MONGODB ATLAS
-// ============================================================================
-const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('✅ Terhubung ke MongoDB Atlas'))
-  .catch((err) => console.error('❌ Gagal koneksi MongoDB:', err));
+// KONEKSI KE MONGODB (Menggunakan MONGODB_URI sesuai konfigurasi asli Anda)
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => console.log('✅ Berhasil Terhubung ke MongoDB Atlas'))
+  .catch(err => console.error('❌ Gagal koneksi:', err));
 
 // ============================================================================
-// 2. KONFIGURASI NODEMAILER (AUTO-EMAIL PDF KE ceklistgrooming@gmail.com)
+// 1. SKEMA & ENDPOINT PAKET LAYANAN (SESUAI KODE ASLI ANDA)
 // ============================================================================
-const DEFAULT_RECEIVER_EMAIL = 'ceklistgrooming@gmail.com';
-
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER || DEFAULT_RECEIVER_EMAIL,
-    pass: process.env.EMAIL_PASS // Gunakan 16-digit App Password Google
-  }
+const slotSchema = new mongoose.Schema({
+  index: Number,
+  name: String,
+  nominal: { type: Number, default: 0 },
+  branch: { type: String, default: '' },
+  date: { type: String, default: '' },
+  used: { type: Boolean, default: false },
+  groomer: { type: String, default: '' },
+  notes: { type: String, default: '' }
 });
 
-// ============================================================================
-// 3. SCHEMA & ROUTES: PAKET LAYANAN (/api/packages)
-// ============================================================================
-const PackageSchema = new mongoose.Schema({
+const packageSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   date: String,
   owner: String,
@@ -57,97 +44,96 @@ const PackageSchema = new mongoose.Schema({
   type: String,
   deposit: Number,
   branch: String,
-  status: String,
+  status: { type: String, default: 'Aktif' },
   notes: String,
-  slots: Array
+  slots: [slotSchema]
 }, { timestamps: true });
 
-const PackageModel = mongoose.model('Package', PackageSchema);
+const Package = mongoose.model('Package', packageSchema);
 
+// 1. Ambil semua data paket
 app.get('/api/packages', async (req, res) => {
   try {
-    const data = await PackageModel.find().sort({ createdAt: -1 });
-    res.json({ status: 'success', data });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    const packages = await Package.find().sort({ createdAt: -1 });
+    res.json({ status: 'success', data: packages });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
+// 2. Buat paket baru
 app.post('/api/packages', async (req, res) => {
   try {
-    const created = await PackageModel.findOneAndUpdate(
-      { id: req.body.id },
-      req.body,
-      { upsert: true, new: true }
-    );
-    res.json({ status: 'success', data: created });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    const newPackage = new Package(req.body);
+    await newPackage.save();
+    res.json({ status: 'success', message: 'Paket tersimpan di MongoDB', data: newPackage });
+  } catch (error) {
+    res.status(400).json({ status: 'error', message: error.message });
   }
 });
 
-app.put('/api/packages/:id/redeem', async (req, res) => {
+// 3. Potong Saldo
+app.put('/api/packages/:pkgId/redeem', async (req, res) => {
   try {
+    const { pkgId } = req.params;
     const { slotIndex, payload } = req.body;
-    const pkg = await PackageModel.findOne({ id: req.params.id });
-    if (!pkg) return res.status(404).json({ status: 'error', message: 'Paket tidak ditemukan' });
 
-    const slot = (pkg.slots || []).find(s => Number(s.index) === Number(slotIndex));
-    if (!slot) return res.status(400).json({ status: 'error', message: 'Slot tidak ditemukan' });
+    const pkg = await Package.findOne({ id: pkgId });
+    if (!pkg) return res.status(404).json({ message: 'Paket tidak ditemukan' });
 
-    Object.assign(slot, payload);
-    pkg.markModified('slots');
+    const slot = pkg.slots.find(s => s.index === slotIndex);
+    if (slot) { Object.assign(slot, payload); }
 
-    const allUsed = (pkg.slots || []).every(s => s.used === true || String(s.used) === 'true');
-    pkg.status = allUsed ? 'Selesai' : 'Aktif';
+    if (pkg.slots.every(s => s.used === true)) { pkg.status = "Selesai"; }
 
     await pkg.save();
-    res.json({ status: 'success', data: pkg });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    res.json({ status: 'success', message: 'Sesi berhasil dipotong' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-app.delete('/api/packages/:id', async (req, res) => {
+// 4. Hapus Paket
+app.delete('/api/packages/:pkgId', async (req, res) => {
   try {
-    await PackageModel.deleteOne({ id: req.params.id });
-    res.json({ status: 'success' });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    await Package.findOneAndDelete({ id: req.params.pkgId });
+    res.json({ status: 'success', message: 'Paket dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
 // ============================================================================
-// 4. SCHEMA & ROUTES: CHECKLIST GROOMING + AUTO EMAIL PDF (/api/checklists)
+// 2. SKEMA & ENDPOINT CHECKLIST GROOMING + AUTO EMAIL PDF (/api/checklists)
 // ============================================================================
-const ChecklistSchema = new mongoose.Schema({
+const checklistSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   tanggal: String,
   ownerName: String,
-  hp: String,
-  alamat: String,
+  hp: { type: String, default: '' },
+  alamat: { type: String, default: '' },
   statusGrooming: String,
   hewan1: Object,
   hewan2: Object,
-  catatanKhusus: String,
+  catatanKhusus: { type: String, default: '' },
   groomer: String,
-  ttdOwner: String,
+  ttdOwner: { type: String, default: '' },
   fileName: String
 }, { timestamps: true });
 
-const ChecklistModel = mongoose.model('Checklist', ChecklistSchema);
+const Checklist = mongoose.model('Checklist', checklistSchema);
 
 // Ambil semua riwayat checklist dari MongoDB
 app.get('/api/checklists', async (req, res) => {
   try {
-    const data = await ChecklistModel.find().sort({ createdAt: -1 });
-    res.json({ status: 'success', data });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    const list = await Checklist.find().sort({ createdAt: -1 });
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
-// Simpan checklist ke MongoDB & kirim lampiran PDF ke ceklistgrooming@gmail.com
+// Simpan checklist ke MongoDB & otomatis kirim PDF ke ceklistgrooming@gmail.com
 app.post('/api/checklists', async (req, res) => {
   try {
     const {
@@ -169,11 +155,13 @@ app.post('/api/checklists', async (req, res) => {
       pdfBase64
     } = req.body;
 
-    // 1. Simpan data ke MongoDB (tanpa menyimpan string pdfBase64 agar database tetap hemat ruang)
-    const savedDoc = await ChecklistModel.findOneAndUpdate(
-      { id: id || `CHK-${Date.now()}` },
+    const docId = id || `CHK-${Date.now()}`;
+
+    // 1. Simpan ke MongoDB Atlas
+    const savedChecklist = await Checklist.findOneAndUpdate(
+      { id: docId },
       {
-        id: id || `CHK-${Date.now()}`,
+        id: docId,
         tanggal,
         ownerName,
         hp,
@@ -189,12 +177,19 @@ app.post('/api/checklists', async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // 2. Kirim file PDF ke email ceklistgrooming@gmail.com
+    // 2. Kirim file PDF ke ceklistgrooming@gmail.com jika EMAIL_PASS sudah disetel di Render
     let emailSent = false;
-    const recipient = targetEmail || DEFAULT_RECEIVER_EMAIL;
+    const recipient = targetEmail || 'ceklistgrooming@gmail.com';
 
-    if (pdfBase64 && process.env.EMAIL_PASS) {
-      // Bersihkan prefix "data:application/pdf;base64," atau "data:application/pdf;filename=generated.pdf;base64,"
+    if (nodemailer && pdfBase64 && process.env.EMAIL_PASS) {
+      const transporter = nodemailer.createTransport({
+        service: 'gmail',
+        auth: {
+          user: process.env.EMAIL_USER || 'ceklistgrooming@gmail.com',
+          pass: process.env.EMAIL_PASS
+        }
+      });
+
       const cleanBase64 = pdfBase64.includes('base64,')
         ? pdfBase64.split('base64,')[1]
         : pdfBase64;
@@ -202,22 +197,21 @@ app.post('/api/checklists', async (req, res) => {
       const pdfFileName = fileName || `${ownerName || 'Owner'} (${petName || 'Pet'}) ${formattedDate || tanggal}.pdf`;
 
       await transporter.sendMail({
-        from: `"Groovy Pet Center Radio 03" <${process.env.EMAIL_USER || DEFAULT_RECEIVER_EMAIL}>`,
+        from: `"Groovy Pet Center Radio 03" <${process.env.EMAIL_USER || 'ceklistgrooming@gmail.com'}>`,
         to: recipient,
-        subject: `[CHECKLIST GROOMING - ${statusGrooming || 'GROOMING'}] ${ownerName} (${petName || hewan1?.nama || '-'}) - ${formattedDate || tanggal}`,
+        subject: `[CHECKLIST GROOMING - ${statusGrooming || 'GROOMING'}] ${ownerName} (${petName || hewan1?.nama || '-'})`,
         html: `
           <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.5;">
             <h2 style="color: #C2185B; margin-bottom: 4px;">🐾 Checklist Grooming - Groovy Pet Center Radio 03</h2>
-            <p style="margin-top: 0; color: #666;">Berikut terlampir dokumen PDF hasil pemeriksaan Checklist Grooming:</p>
-            <table style="border-collapse: collapse; width: 100%; max-width: 520px; font-size: 13px;">
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Tanggal</td><td style="padding: 6px 10px; border: 1px solid #eee;">${formattedDate || tanggal || '-'}</td></tr>
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Status Grooming</td><td style="padding: 6px 10px; border: 1px solid #eee;"><strong>${statusGrooming || '-'}</strong></td></tr>
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Nama Owner</td><td style="padding: 6px 10px; border: 1px solid #eee;">${ownerName || '-'} (${hp || '-'})</td></tr>
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Nama Anabul</td><td style="padding: 6px 10px; border: 1px solid #eee;">${petName || hewan1?.nama || '-'}</td></tr>
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Petugas / Groomer</td><td style="padding: 6px 10px; border: 1px solid #eee;">${groomer || '-'}</td></tr>
-              <tr><td style="padding: 6px 10px; border: 1px solid #eee; font-weight: bold; background: #fff8f0;">Catatan Khusus</td><td style="padding: 6px 10px; border: 1px solid #eee;">${catatanKhusus || '-'}</td></tr>
+            <p style="margin-top: 0; color: #666;">Dokumen PDF Checklist Grooming terlampir secara otomatis:</p>
+            <table style="border-collapse: collapse; width: 100%; max-width: 500px; font-size: 13px;">
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Tanggal</td><td style="padding: 6px 10px; border: 1px solid #ddd;">${formattedDate || tanggal || '-'}</td></tr>
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Status Grooming</td><td style="padding: 6px 10px; border: 1px solid #ddd;"><strong>${statusGrooming || '-'}</strong></td></tr>
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Nama Owner</td><td style="padding: 6px 10px; border: 1px solid #ddd;">${ownerName || '-'} (${hp || '-'})</td></tr>
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Nama Hewan</td><td style="padding: 6px 10px; border: 1px solid #ddd;">${petName || hewan1?.nama || '-'}</td></tr>
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Petugas / Groomer</td><td style="padding: 6px 10px; border: 1px solid #ddd;">${groomer || '-'}</td></tr>
+              <tr><td style="padding: 6px 10px; border: 1px solid #ddd; font-weight: bold; background: #fff8f0;">Catatan Khusus</td><td style="padding: 6px 10px; border: 1px solid #ddd;">${catatanKhusus || '-'}</td></tr>
             </table>
-            <p style="font-size: 12px; color: #888; margin-top: 14px;">File PDF lengkap terlampir pada email ini (<strong>${pdfFileName}</strong>).</p>
           </div>
         `,
         attachments: [
@@ -236,25 +230,24 @@ app.post('/api/checklists', async (req, res) => {
       status: 'success',
       emailSent,
       recipient,
-      data: savedDoc
+      data: savedChecklist
     });
-  } catch (err) {
-    console.error('Error /api/checklists:', err);
-    res.status(500).json({ status: 'error', message: err.message });
+  } catch (error) {
+    console.error('Error /api/checklists:', error);
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
 // Hapus riwayat checklist dari MongoDB
 app.delete('/api/checklists/:id', async (req, res) => {
   try {
-    await ChecklistModel.deleteOne({ id: req.params.id });
-    res.json({ status: 'success' });
-  } catch (err) {
-    res.status(500).json({ status: 'error', message: err.message });
+    await Checklist.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Checklist dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
   }
 });
 
+// JALANKAN SERVER
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server Groovy berjalan di port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`🚀 Server Backend berjalan di port ${PORT}`));
