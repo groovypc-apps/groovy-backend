@@ -251,13 +251,12 @@ const launcherLinkSchema = new mongoose.Schema({
   bgImage: { type: String, default: '' },
   bgFit: { type: String, default: 'cover' },
   hideIcon: { type: Boolean, default: false },
-  pinned: { type: Boolean, default: true },
+  pinned: { type: Boolean, default: false },
   order: { type: Number, default: 0 }
 }, { timestamps: true });
 
 const LauncherLink = mongoose.model('LauncherLink', launcherLinkSchema);
 
-// Ambil semua kartu aplikasi dari MongoDB
 app.get('/api/links', async (req, res) => {
   try {
     const links = await LauncherLink.find().sort({ order: 1, createdAt: 1 });
@@ -267,7 +266,6 @@ app.get('/api/links', async (req, res) => {
   }
 });
 
-// Simpan atau update 1 kartu aplikasi (termasuk URL gambar latar & ikon) ke MongoDB
 app.post('/api/links', async (req, res) => {
   try {
     const item = req.body;
@@ -295,7 +293,6 @@ app.post('/api/links', async (req, res) => {
   }
 });
 
-// Sinkronisasi / urutkan seluruh daftar kartu sekaligus ke MongoDB
 app.put('/api/links/sync', async (req, res) => {
   try {
     const list = Array.isArray(req.body.links) ? req.body.links : [];
@@ -327,11 +324,82 @@ app.put('/api/links/sync', async (req, res) => {
   }
 });
 
-// Hapus 1 kartu aplikasi dari MongoDB
 app.delete('/api/links/:id', async (req, res) => {
   try {
     await LauncherLink.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Kartu aplikasi dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 4. SKEMA & ENDPOINT JADWAL GROOMING (/api/schedules)
+// ============================================================================
+const scheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  service: { type: String, required: true },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true });
+
+const Schedule = mongoose.model('Schedule', scheduleSchema);
+
+// Ambil semua jadwal grooming dari MongoDB
+app.get('/api/schedules', async (req, res) => {
+  try {
+    const list = await Schedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Simpan 1 atau beberapa jadwal hewan sekaligus ke MongoDB
+app.post('/api/schedules', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    for (const item of entries) {
+      if (!item || !item.ownerName || !item.petName) continue;
+      const docId = String(item.id || `SCH-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+      const isoDate = String(item.isoDate || '').split('T')[0];
+      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
+
+      await Schedule.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          ownerName: item.ownerName,
+          petName: item.petName,
+          service: item.service || 'BATH',
+          notes: item.notes || '',
+          isoDate,
+          timestamp,
+          formattedDate: item.formattedDate || isoDate
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    const updated = await Schedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: updated });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Hapus 1 jadwal grooming dari MongoDB
+app.delete('/api/schedules/:id', async (req, res) => {
+  try {
+    await Schedule.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Jadwal dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
