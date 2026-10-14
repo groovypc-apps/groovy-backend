@@ -3,27 +3,26 @@ const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
 
-// Muat nodemailer dengan aman (tidak akan bikin server crash meskipun package.json belum diupdate)
+// Muat nodemailer dengan aman
 let nodemailer = null;
 try {
   nodemailer = require('nodemailer');
 } catch (err) {
-  console.warn('⚠️ Modul nodemailer belum terpasang di package.json. Fitur email menunggu instalasi nodemailer.');
+  console.warn('⚠️ Modul nodemailer belum terpasang di package.json.');
 }
 
 const app = express();
 app.use(cors());
-// Perbesar limit JSON ke 25MB agar pengiriman file PDF Base64 dari Checklist Grooming tidak ditolak
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
-// KONEKSI KE MONGODB (Menggunakan MONGODB_URI sesuai konfigurasi asli Anda)
+// KONEKSI KE MONGODB ATLAS
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('✅ Berhasil Terhubung ke MongoDB Atlas'))
   .catch(err => console.error('❌ Gagal koneksi:', err));
 
 // ============================================================================
-// 1. SKEMA & ENDPOINT PAKET LAYANAN (SESUAI KODE ASLI ANDA)
+// 1. SKEMA & ENDPOINT PAKET LAYANAN (/api/packages)
 // ============================================================================
 const slotSchema = new mongoose.Schema({
   index: Number,
@@ -51,7 +50,6 @@ const packageSchema = new mongoose.Schema({
 
 const Package = mongoose.model('Package', packageSchema);
 
-// 1. Ambil semua data paket
 app.get('/api/packages', async (req, res) => {
   try {
     const packages = await Package.find().sort({ createdAt: -1 });
@@ -61,7 +59,6 @@ app.get('/api/packages', async (req, res) => {
   }
 });
 
-// 2. Buat paket baru
 app.post('/api/packages', async (req, res) => {
   try {
     const newPackage = new Package(req.body);
@@ -72,7 +69,6 @@ app.post('/api/packages', async (req, res) => {
   }
 });
 
-// 3. Potong Saldo
 app.put('/api/packages/:pkgId/redeem', async (req, res) => {
   try {
     const { pkgId } = req.params;
@@ -93,7 +89,6 @@ app.put('/api/packages/:pkgId/redeem', async (req, res) => {
   }
 });
 
-// 4. Hapus Paket
 app.delete('/api/packages/:pkgId', async (req, res) => {
   try {
     await Package.findOneAndDelete({ id: req.params.pkgId });
@@ -123,7 +118,6 @@ const checklistSchema = new mongoose.Schema({
 
 const Checklist = mongoose.model('Checklist', checklistSchema);
 
-// Ambil semua riwayat checklist dari MongoDB
 app.get('/api/checklists', async (req, res) => {
   try {
     const list = await Checklist.find().sort({ createdAt: -1 });
@@ -133,7 +127,6 @@ app.get('/api/checklists', async (req, res) => {
   }
 });
 
-// Simpan checklist ke MongoDB & otomatis kirim PDF ke ceklistgrooming@gmail.com
 app.post('/api/checklists', async (req, res) => {
   try {
     const {
@@ -157,7 +150,6 @@ app.post('/api/checklists', async (req, res) => {
 
     const docId = id || `CHK-${Date.now()}`;
 
-    // 1. Simpan ke MongoDB Atlas
     const savedChecklist = await Checklist.findOneAndUpdate(
       { id: docId },
       {
@@ -177,7 +169,6 @@ app.post('/api/checklists', async (req, res) => {
       { upsert: true, new: true }
     );
 
-    // 2. Kirim file PDF ke ceklistgrooming@gmail.com jika EMAIL_PASS sudah disetel di Render
     let emailSent = false;
     const recipient = targetEmail || 'ceklistgrooming@gmail.com';
 
@@ -238,11 +229,109 @@ app.post('/api/checklists', async (req, res) => {
   }
 });
 
-// Hapus riwayat checklist dari MongoDB
 app.delete('/api/checklists/:id', async (req, res) => {
   try {
     await Checklist.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Checklist dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 3. SKEMA & ENDPOINT APP LAUNCHER / PORTAL STAF (/api/links)
+// ============================================================================
+const launcherLinkSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, required: true },
+  url: { type: String, required: true },
+  category: { type: String, default: 'Operasional' },
+  theme: { type: String, default: 'duo' },
+  icon: { type: String, default: '🐾' },
+  bgImage: { type: String, default: '' },
+  bgFit: { type: String, default: 'cover' },
+  hideIcon: { type: Boolean, default: false },
+  pinned: { type: Boolean, default: true },
+  order: { type: Number, default: 0 }
+}, { timestamps: true });
+
+const LauncherLink = mongoose.model('LauncherLink', launcherLinkSchema);
+
+// Ambil semua kartu aplikasi dari MongoDB
+app.get('/api/links', async (req, res) => {
+  try {
+    const links = await LauncherLink.find().sort({ order: 1, createdAt: 1 });
+    res.json({ status: 'success', data: links });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Simpan atau update 1 kartu aplikasi (termasuk URL gambar latar & ikon) ke MongoDB
+app.post('/api/links', async (req, res) => {
+  try {
+    const item = req.body;
+    const docId = item.id || `app-${Date.now()}`;
+    const saved = await LauncherLink.findOneAndUpdate(
+      { id: docId },
+      {
+        id: docId,
+        name: item.name,
+        url: item.url,
+        category: item.category || 'Operasional',
+        theme: item.theme || 'duo',
+        icon: item.icon || '🐾',
+        bgImage: item.bgImage || '',
+        bgFit: item.bgFit || 'cover',
+        hideIcon: Boolean(item.hideIcon),
+        pinned: Boolean(item.pinned),
+        order: typeof item.order === 'number' ? item.order : 0
+      },
+      { upsert: true, new: true }
+    );
+    res.json({ status: 'success', data: saved });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Sinkronisasi / urutkan seluruh daftar kartu sekaligus ke MongoDB
+app.put('/api/links/sync', async (req, res) => {
+  try {
+    const list = Array.isArray(req.body.links) ? req.body.links : [];
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      if (!item || !item.id || !item.name || !item.url) continue;
+      await LauncherLink.findOneAndUpdate(
+        { id: item.id },
+        {
+          id: item.id,
+          name: item.name,
+          url: item.url,
+          category: item.category || 'Operasional',
+          theme: item.theme || 'duo',
+          icon: item.icon || '🐾',
+          bgImage: item.bgImage || '',
+          bgFit: item.bgFit || 'cover',
+          hideIcon: Boolean(item.hideIcon),
+          pinned: Boolean(item.pinned),
+          order: i
+        },
+        { upsert: true, new: true }
+      );
+    }
+    const all = await LauncherLink.find().sort({ order: 1, createdAt: 1 });
+    res.json({ status: 'success', data: all });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// Hapus 1 kartu aplikasi dari MongoDB
+app.delete('/api/links/:id', async (req, res) => {
+  try {
+    await LauncherLink.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Kartu aplikasi dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
