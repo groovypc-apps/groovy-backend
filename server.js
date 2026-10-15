@@ -340,6 +340,7 @@ const scheduleSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   ownerName: { type: String, required: true },
   petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
   service: { type: String, required: true },
   notes: { type: String, default: '' },
   isoDate: { type: String, required: true },
@@ -348,6 +349,9 @@ const scheduleSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 const Schedule = mongoose.model('Schedule', scheduleSchema);
+
+// Skema terpisah untuk Jadwal Home Grooming
+const HomeSchedule = mongoose.model('HomeSchedule', scheduleSchema);
 
 // Ambil semua jadwal grooming dari MongoDB
 app.get('/api/schedules', async (req, res) => {
@@ -378,6 +382,7 @@ app.post('/api/schedules', async (req, res) => {
           id: docId,
           ownerName: item.ownerName,
           petName: item.petName,
+          petType: item.petType || 'Dog',
           service: item.service || 'BATH',
           notes: item.notes || '',
           isoDate,
@@ -400,6 +405,63 @@ app.delete('/api/schedules/:id', async (req, res) => {
   try {
     await Schedule.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Jadwal dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 5. SKEMA & ENDPOINT JADWAL HOME GROOMING (/api/home-schedules)
+// ============================================================================
+app.get('/api/home-schedules', async (req, res) => {
+  try {
+    const list = await HomeSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.post('/api/home-schedules', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    for (const item of entries) {
+      if (!item || !item.ownerName || !item.petName) continue;
+      const docId = String(item.id || `HSCH-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+      const isoDate = String(item.isoDate || '').split('T')[0];
+      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
+
+      await HomeSchedule.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          ownerName: item.ownerName,
+          petName: item.petName,
+          petType: item.petType || 'Dog',
+          service: item.service || 'BATH',
+          notes: item.notes || '',
+          isoDate,
+          timestamp,
+          formattedDate: item.formattedDate || isoDate
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    const updated = await HomeSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: updated });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.delete('/api/home-schedules/:id', async (req, res) => {
+  try {
+    await HomeSchedule.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Jadwal home grooming dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
