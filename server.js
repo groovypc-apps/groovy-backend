@@ -346,12 +346,39 @@ const scheduleSchema = new mongoose.Schema({
   isoDate: { type: String, required: true },
   timestamp: { type: Number, default: 0 },
   formattedDate: { type: String, default: '' }
-}, { timestamps: true });
+}, { timestamps: true, collection: 'schedules' });
 
 const Schedule = mongoose.model('Schedule', scheduleSchema);
 
-// Skema terpisah untuk Jadwal Home Grooming
-const HomeSchedule = mongoose.model('HomeSchedule', scheduleSchema);
+// Skema & koleksi terpisah khusus untuk Jadwal Home Grooming
+const homeScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, required: true },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'home_schedules' });
+
+const HomeSchedule = mongoose.model('HomeSchedule', homeScheduleSchema);
+
+// Skema & koleksi terpisah khusus untuk Jadwal Daycare & Dog Walker
+const daycareScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, required: true },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'daycare_schedules' });
+
+const DaycareSchedule = mongoose.model('DaycareSchedule', daycareScheduleSchema);
 
 // Ambil semua jadwal grooming dari MongoDB
 app.get('/api/schedules', async (req, res) => {
@@ -462,6 +489,66 @@ app.delete('/api/home-schedules/:id', async (req, res) => {
   try {
     await HomeSchedule.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Jadwal home grooming dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 6. SKEMA & ENDPOINT JADWAL DAYCARE & DOG WALKER (/api/daycare-schedules)
+// ============================================================================
+app.get('/api/daycare-schedules', async (req, res) => {
+  try {
+    const list = await DaycareSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.post('/api/daycare-schedules', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    for (const item of entries) {
+      if (!item || !item.ownerName || !item.petName) continue;
+      const docId = String(item.id || `DCW-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+      const isoDate = String(item.isoDate || '').split('T')[0];
+      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
+      const service = String(item.service || 'DAYCARE').toUpperCase();
+      // Jika Dogwalker dipilih, otomatis jenis pet adalah Dog
+      const petType = service === 'DOGWALKER' ? 'Dog' : (item.petType || 'Dog');
+
+      await DaycareSchedule.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          ownerName: item.ownerName,
+          petName: item.petName,
+          petType,
+          service,
+          notes: item.notes || '',
+          isoDate,
+          timestamp,
+          formattedDate: item.formattedDate || isoDate
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    const updated = await DaycareSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: updated });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.delete('/api/daycare-schedules/:id', async (req, res) => {
+  try {
+    await DaycareSchedule.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Jadwal daycare & dog walker dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
