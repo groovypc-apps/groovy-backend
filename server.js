@@ -380,6 +380,21 @@ const daycareScheduleSchema = new mongoose.Schema({
 
 const DaycareSchedule = mongoose.model('DaycareSchedule', daycareScheduleSchema);
 
+// Skema & koleksi terpisah khusus untuk Jadwal Boarding
+const boardingScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, default: 'BOARDING' },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'boarding_schedules' });
+
+const BoardingSchedule = mongoose.model('BoardingSchedule', boardingScheduleSchema);
+
 // Ambil semua jadwal grooming dari MongoDB
 app.get('/api/schedules', async (req, res) => {
   try {
@@ -549,6 +564,65 @@ app.delete('/api/daycare-schedules/:id', async (req, res) => {
   try {
     await DaycareSchedule.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Jadwal daycare & dog walker dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 7. SKEMA & ENDPOINT JADWAL BOARDING (/api/boarding-schedules)
+// ============================================================================
+app.get('/api/boarding-schedules', async (req, res) => {
+  try {
+    const list = await BoardingSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.post('/api/boarding-schedules', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    for (const item of entries) {
+      if (!item || !item.ownerName || !item.petName) continue;
+      const docId = String(item.id || `BRD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
+      const isoDate = String(item.isoDate || '').split('T')[0];
+      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
+      const service = String(item.service || 'BOARDING').toUpperCase();
+      const petType = item.petType || 'Dog';
+
+      await BoardingSchedule.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          ownerName: item.ownerName,
+          petName: item.petName,
+          petType,
+          service,
+          notes: item.notes || '',
+          isoDate,
+          timestamp,
+          formattedDate: item.formattedDate || isoDate
+        },
+        { upsert: true, new: true }
+      );
+    }
+
+    const updated = await BoardingSchedule.find().sort({ timestamp: 1, createdAt: 1 });
+    res.json({ status: 'success', data: updated });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.delete('/api/boarding-schedules/:id', async (req, res) => {
+  try {
+    await BoardingSchedule.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Jadwal boarding dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
