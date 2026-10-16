@@ -604,13 +604,20 @@ app.post('/api/boarding-schedules', async (req, res) => {
       const petType = String(item.petType || 'Dog').toLowerCase() === 'cat' ? 'Cat' : 'Dog';
 
       const stMs = new Date(isoDate + 'T00:00:00').getTime();
-      const enMs = new Date(endDate + 'T00:00:00').getTime();
-      let durationDays = Math.max(1, Math.round((enMs - stMs) / (1000 * 60 * 60 * 24)) + 1);
+      let enMs = new Date(endDate + 'T00:00:00').getTime();
+      if (enMs <= stMs) {
+        const nextD = new Date(stMs);
+        nextD.setDate(nextD.getDate() + 1);
+        endDate = `${nextD.getFullYear()}-${String(nextD.getMonth() + 1).padStart(2, '0')}-${String(nextD.getDate()).padStart(2, '0')}`;
+        enMs = nextD.getTime();
+      }
+      // Dihitung per malam sesuai standar perhotelan (Check-Out dikurangi Check-In)
+      let durationDays = Math.max(1, Math.round((enMs - stMs) / (1000 * 60 * 60 * 24)));
 
       if (service === 'SHORTTIME' && durationDays > 7) {
         durationDays = 7;
         const clampedEnd = new Date(stMs);
-        clampedEnd.setDate(clampedEnd.getDate() + 6);
+        clampedEnd.setDate(clampedEnd.getDate() + 7);
         const y = clampedEnd.getFullYear();
         const m = String(clampedEnd.getMonth() + 1).padStart(2, '0');
         const d = String(clampedEnd.getDate()).padStart(2, '0');
