@@ -380,15 +380,18 @@ const daycareScheduleSchema = new mongoose.Schema({
 
 const DaycareSchedule = mongoose.model('DaycareSchedule', daycareScheduleSchema);
 
-// Skema & koleksi terpisah khusus untuk Jadwal Boarding
+// Skema & koleksi terpisah khusus untuk Jadwal Boarding (Booking Hotel & Shorttime)
 const boardingScheduleSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   ownerName: { type: String, required: true },
   petName: { type: String, required: true },
   petType: { type: String, default: 'Dog' },
-  service: { type: String, default: 'BOARDING' },
+  service: { type: String, default: 'HOTEL' }, // SHORTTIME atau HOTEL
+  roomType: { type: String, default: '' },     // Supawrior, Supawrior Plus, Lux Room, Sweet Room
   notes: { type: String, default: '' },
-  isoDate: { type: String, required: true },
+  isoDate: { type: String, required: true },    // Tanggal Check-In (YYYY-MM-DD)
+  endDate: { type: String, default: '' },      // Tanggal Check-Out (YYYY-MM-DD)
+  durationDays: { type: Number, default: 1 },   // Durasi menginap (Shorttime maks 7 hari)
   timestamp: { type: Number, default: 0 },
   formattedDate: { type: String, default: '' }
 }, { timestamps: true, collection: 'boarding_schedules' });
@@ -587,13 +590,40 @@ app.post('/api/boarding-schedules', async (req, res) => {
       ? req.body.entries
       : (Array.isArray(req.body) ? req.body : [req.body]);
 
+    const dogRooms = ['Supawrior', 'Supawrior Plus', 'Lux Room', 'Sweet Room'];
+    const catRooms = ['Supawrior', 'Supawrior Plus', 'Sweet Room'];
+
     for (const item of entries) {
       if (!item || !item.ownerName || !item.petName) continue;
       const docId = String(item.id || `BRD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
       const isoDate = String(item.isoDate || '').split('T')[0];
-      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
-      const service = String(item.service || 'BOARDING').toUpperCase();
-      const petType = item.petType || 'Dog';
+      let endDate = String(item.endDate || isoDate).split('T')[0] || isoDate;
+      if (endDate < isoDate) endDate = isoDate;
+
+      const service = String(item.service || 'HOTEL').toUpperCase() === 'SHORTTIME' ? 'SHORTTIME' : 'HOTEL';
+      const petType = String(item.petType || 'Dog').toLowerCase() === 'cat' ? 'Cat' : 'Dog';
+
+      const stMs = new Date(isoDate + 'T00:00:00').getTime();
+      const enMs = new Date(endDate + 'T00:00:00').getTime();
+      let durationDays = Math.max(1, Math.round((enMs - stMs) / (1000 * 60 * 60 * 24)) + 1);
+
+      if (service === 'SHORTTIME' && durationDays > 7) {
+        durationDays = 7;
+        const clampedEnd = new Date(stMs);
+        clampedEnd.setDate(clampedEnd.getDate() + 6);
+        const y = clampedEnd.getFullYear();
+        const m = String(clampedEnd.getMonth() + 1).padStart(2, '0');
+        const d = String(clampedEnd.getDate()).padStart(2, '0');
+        endDate = `${y}-${m}-${d}`;
+      }
+
+      let roomType = '';
+      if (service === 'HOTEL') {
+        const validRooms = petType === 'Cat' ? catRooms : dogRooms;
+        roomType = validRooms.includes(item.roomType) ? item.roomType : 'Supawrior';
+      }
+
+      const timestamp = item.timestamp || stMs || Date.now();
 
       await BoardingSchedule.findOneAndUpdate(
         { id: docId },
@@ -603,8 +633,11 @@ app.post('/api/boarding-schedules', async (req, res) => {
           petName: item.petName,
           petType,
           service,
+          roomType,
           notes: item.notes || '',
           isoDate,
+          endDate,
+          durationDays,
           timestamp,
           formattedDate: item.formattedDate || isoDate
         },
