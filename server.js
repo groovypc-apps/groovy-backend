@@ -1,6 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 // Muat nodemailer dengan aman
@@ -15,6 +17,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+// Sajikan file statis (aplikasi terpadu HTML) jika dijalankan dari folder yang sama
+app.use(express.static(__dirname));
 
 // KONEKSI KE MONGODB ATLAS
 mongoose.connect(process.env.MONGODB_URI)
@@ -80,7 +85,7 @@ app.put('/api/packages/:pkgId/redeem', async (req, res) => {
     const slot = pkg.slots.find(s => s.index === slotIndex);
     if (slot) { Object.assign(slot, payload); }
 
-    if (pkg.slots.every(s => s.used === true)) { pkg.status = "Selesai"; }
+    if (pkg.slots.every(s => s.used === true)) { pkg.status = 'Selesai'; }
 
     await pkg.save();
     res.json({ status: 'success', message: 'Sesi berhasil dipotong' });
@@ -334,7 +339,7 @@ app.delete('/api/links/:id', async (req, res) => {
 });
 
 // ============================================================================
-// 4. SKEMA & ENDPOINT JADWAL GROOMING (/api/schedules)
+// 4. SKEMA & ENDPOINT JADWAL GROOMING TOKO (/api/schedules)
 // ============================================================================
 const scheduleSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
@@ -350,55 +355,6 @@ const scheduleSchema = new mongoose.Schema({
 
 const Schedule = mongoose.model('Schedule', scheduleSchema);
 
-// Skema & koleksi terpisah khusus untuk Jadwal Home Grooming
-const homeScheduleSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  ownerName: { type: String, required: true },
-  petName: { type: String, required: true },
-  petType: { type: String, default: 'Dog' },
-  service: { type: String, required: true },
-  notes: { type: String, default: '' },
-  isoDate: { type: String, required: true },
-  timestamp: { type: Number, default: 0 },
-  formattedDate: { type: String, default: '' }
-}, { timestamps: true, collection: 'home_schedules' });
-
-const HomeSchedule = mongoose.model('HomeSchedule', homeScheduleSchema);
-
-// Skema & koleksi terpisah khusus untuk Jadwal Daycare & Dog Walker
-const daycareScheduleSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  ownerName: { type: String, required: true },
-  petName: { type: String, required: true },
-  petType: { type: String, default: 'Dog' },
-  service: { type: String, required: true },
-  notes: { type: String, default: '' },
-  isoDate: { type: String, required: true },
-  timestamp: { type: Number, default: 0 },
-  formattedDate: { type: String, default: '' }
-}, { timestamps: true, collection: 'daycare_schedules' });
-
-const DaycareSchedule = mongoose.model('DaycareSchedule', daycareScheduleSchema);
-
-// Skema & koleksi terpisah khusus untuk Jadwal Boarding (Booking Hotel & Shorttime)
-const boardingScheduleSchema = new mongoose.Schema({
-  id: { type: String, required: true, unique: true },
-  ownerName: { type: String, required: true },
-  petName: { type: String, required: true },
-  petType: { type: String, default: 'Dog' },
-  service: { type: String, default: 'HOTEL' }, // SHORTTIME atau HOTEL
-  roomType: { type: String, default: '' },     // Supawrior, Supawrior Plus, Lux Room, Sweet Room
-  notes: { type: String, default: '' },
-  isoDate: { type: String, required: true },    // Tanggal Check-In (YYYY-MM-DD)
-  endDate: { type: String, default: '' },      // Tanggal Check-Out (YYYY-MM-DD)
-  durationDays: { type: Number, default: 1 },   // Durasi menginap (Shorttime maks 7 hari)
-  timestamp: { type: Number, default: 0 },
-  formattedDate: { type: String, default: '' }
-}, { timestamps: true, collection: 'boarding_schedules' });
-
-const BoardingSchedule = mongoose.model('BoardingSchedule', boardingScheduleSchema);
-
-// Ambil semua jadwal grooming dari MongoDB
 app.get('/api/schedules', async (req, res) => {
   try {
     const list = await Schedule.find().sort({ timestamp: 1, createdAt: 1 });
@@ -408,7 +364,6 @@ app.get('/api/schedules', async (req, res) => {
   }
 });
 
-// Simpan 1 atau beberapa jadwal hewan sekaligus ke MongoDB
 app.post('/api/schedules', async (req, res) => {
   try {
     const entries = Array.isArray(req.body.entries)
@@ -445,7 +400,6 @@ app.post('/api/schedules', async (req, res) => {
   }
 });
 
-// Hapus 1 jadwal grooming dari MongoDB
 app.delete('/api/schedules/:id', async (req, res) => {
   try {
     await Schedule.findOneAndDelete({ id: req.params.id });
@@ -458,6 +412,20 @@ app.delete('/api/schedules/:id', async (req, res) => {
 // ============================================================================
 // 5. SKEMA & ENDPOINT JADWAL HOME GROOMING (/api/home-schedules)
 // ============================================================================
+const homeScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, required: true },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'home_schedules' });
+
+const HomeSchedule = mongoose.model('HomeSchedule', homeScheduleSchema);
+
 app.get('/api/home-schedules', async (req, res) => {
   try {
     const list = await HomeSchedule.find().sort({ timestamp: 1, createdAt: 1 });
@@ -515,6 +483,20 @@ app.delete('/api/home-schedules/:id', async (req, res) => {
 // ============================================================================
 // 6. SKEMA & ENDPOINT JADWAL DAYCARE & DOG WALKER (/api/daycare-schedules)
 // ============================================================================
+const daycareScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, required: true },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'daycare_schedules' });
+
+const DaycareSchedule = mongoose.model('DaycareSchedule', daycareScheduleSchema);
+
 app.get('/api/daycare-schedules', async (req, res) => {
   try {
     const list = await DaycareSchedule.find().sort({ timestamp: 1, createdAt: 1 });
@@ -536,7 +518,6 @@ app.post('/api/daycare-schedules', async (req, res) => {
       const isoDate = String(item.isoDate || '').split('T')[0];
       const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
       const service = String(item.service || 'DAYCARE').toUpperCase();
-      // Jika Dogwalker dipilih, otomatis jenis pet adalah Dog
       const petType = service === 'DOGWALKER' ? 'Dog' : (item.petType || 'Dog');
 
       await DaycareSchedule.findOneAndUpdate(
@@ -575,6 +556,23 @@ app.delete('/api/daycare-schedules/:id', async (req, res) => {
 // ============================================================================
 // 7. SKEMA & ENDPOINT JADWAL BOARDING (/api/boarding-schedules)
 // ============================================================================
+const boardingScheduleSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  ownerName: { type: String, required: true },
+  petName: { type: String, required: true },
+  petType: { type: String, default: 'Dog' },
+  service: { type: String, required: true },
+  roomType: { type: String, default: '' },
+  notes: { type: String, default: '' },
+  isoDate: { type: String, required: true },
+  endDate: { type: String, default: '' },
+  durationDays: { type: Number, default: 1 },
+  timestamp: { type: Number, default: 0 },
+  formattedDate: { type: String, default: '' }
+}, { timestamps: true, collection: 'boarding_schedules' });
+
+const BoardingSchedule = mongoose.model('BoardingSchedule', boardingScheduleSchema);
+
 app.get('/api/boarding-schedules', async (req, res) => {
   try {
     const list = await BoardingSchedule.find().sort({ timestamp: 1, createdAt: 1 });
@@ -590,47 +588,15 @@ app.post('/api/boarding-schedules', async (req, res) => {
       ? req.body.entries
       : (Array.isArray(req.body) ? req.body : [req.body]);
 
-    const dogRooms = ['Supawrior', 'Supawrior Plus', 'Lux Room', 'Sweet Room'];
-    const catRooms = ['Supawrior', 'Supawrior Plus', 'Sweet Room'];
-
     for (const item of entries) {
       if (!item || !item.ownerName || !item.petName) continue;
       const docId = String(item.id || `BRD-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`);
       const isoDate = String(item.isoDate || '').split('T')[0];
-      let endDate = String(item.endDate || isoDate).split('T')[0] || isoDate;
-      if (endDate < isoDate) endDate = isoDate;
-
-      const service = String(item.service || 'HOTEL').toUpperCase() === 'SHORTTIME' ? 'SHORTTIME' : 'HOTEL';
-      const petType = String(item.petType || 'Dog').toLowerCase() === 'cat' ? 'Cat' : 'Dog';
-
-      const stMs = new Date(isoDate + 'T00:00:00').getTime();
-      let enMs = new Date(endDate + 'T00:00:00').getTime();
-      if (enMs <= stMs) {
-        const nextD = new Date(stMs);
-        nextD.setDate(nextD.getDate() + 1);
-        endDate = `${nextD.getFullYear()}-${String(nextD.getMonth() + 1).padStart(2, '0')}-${String(nextD.getDate()).padStart(2, '0')}`;
-        enMs = nextD.getTime();
-      }
-      // Dihitung per malam sesuai standar perhotelan (Check-Out dikurangi Check-In)
-      let durationDays = Math.max(1, Math.round((enMs - stMs) / (1000 * 60 * 60 * 24)));
-
-      if (service === 'SHORTTIME' && durationDays > 7) {
-        durationDays = 7;
-        const clampedEnd = new Date(stMs);
-        clampedEnd.setDate(clampedEnd.getDate() + 7);
-        const y = clampedEnd.getFullYear();
-        const m = String(clampedEnd.getMonth() + 1).padStart(2, '0');
-        const d = String(clampedEnd.getDate()).padStart(2, '0');
-        endDate = `${y}-${m}-${d}`;
-      }
-
-      let roomType = '';
-      if (service === 'HOTEL') {
-        const validRooms = petType === 'Cat' ? catRooms : dogRooms;
-        roomType = validRooms.includes(item.roomType) ? item.roomType : 'Supawrior';
-      }
-
-      const timestamp = item.timestamp || stMs || Date.now();
+      const endDate = String(item.endDate || isoDate).split('T')[0];
+      const durationDays = Math.max(1, Number(item.durationDays) || 1);
+      const timestamp = item.timestamp || new Date(isoDate + 'T00:00:00').getTime() || Date.now();
+      const service = String(item.service || 'HOTEL').toUpperCase();
+      const roomType = service === 'SHORTTIME' ? '' : (item.roomType || 'Supawrior');
 
       await BoardingSchedule.findOneAndUpdate(
         { id: docId },
@@ -638,7 +604,7 @@ app.post('/api/boarding-schedules', async (req, res) => {
           id: docId,
           ownerName: item.ownerName,
           petName: item.petName,
-          petType,
+          petType: item.petType || 'Dog',
           service,
           roomType,
           notes: item.notes || '',
@@ -666,6 +632,19 @@ app.delete('/api/boarding-schedules/:id', async (req, res) => {
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
+});
+
+// Route utama untuk menyajikan file aplikasi terpadu jika diakses via browser
+app.get('/', (req, res) => {
+  const unifiedFile = path.join(__dirname, 'groovy_pet_center_radio_03.html');
+  const indexFile = path.join(__dirname, 'index.html');
+  if (fs.existsSync(unifiedFile)) {
+    return res.sendFile(unifiedFile);
+  }
+  if (fs.existsSync(indexFile)) {
+    return res.sendFile(indexFile);
+  }
+  res.json({ status: 'online', message: 'Groovy Pet Center Radio 03 API Server Active' });
 });
 
 // JALANKAN SERVER
