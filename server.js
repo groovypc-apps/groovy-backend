@@ -21,10 +21,25 @@ app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 // Sajikan file statis (aplikasi terpadu HTML) jika dijalankan dari folder yang sama
 app.use(express.static(__dirname));
 
-// KONEKSI KE MONGODB ATLAS
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => console.log('✅ Berhasil Terhubung ke MongoDB Atlas'))
-  .catch(err => console.error('❌ Gagal koneksi:', err));
+// KONEKSI KE MONGODB ATLAS (Aman dari crash jika MONGODB_URI belum disetel)
+const mongoUri = process.env.MONGODB_URI;
+if (mongoUri) {
+  mongoose.connect(mongoUri)
+    .then(() => console.log('✅ Berhasil Terhubung ke MongoDB Atlas'))
+    .catch(err => console.error('❌ Gagal koneksi ke MongoDB Atlas:', err.message));
+} else {
+  console.warn('⚠️ Peringatan: Variabel environment MONGODB_URI belum diatur di file .env!');
+}
+
+// Endpoint Health Check untuk memantau status Server & Koneksi MongoDB
+app.get('/api/health', (req, res) => {
+  const dbStates = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  res.json({
+    status: 'online',
+    database: dbStates[mongoose.connection.readyState] || 'unknown',
+    timestamp: new Date().toISOString()
+  });
+});
 
 // ============================================================================
 // 1. SKEMA & ENDPOINT PAKET LAYANAN (/api/packages)
@@ -64,11 +79,17 @@ app.get('/api/packages', async (req, res) => {
   }
 });
 
+// Menggunakan findOneAndUpdate + upsert agar aman dari duplicate key error saat sinkronisasi/import
 app.post('/api/packages', async (req, res) => {
   try {
-    const newPackage = new Package(req.body);
-    await newPackage.save();
-    res.json({ status: 'success', message: 'Paket tersimpan di MongoDB', data: newPackage });
+    const body = req.body || {};
+    const docId = String(body.id || `PKG-${new Date().getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`);
+    const savedPackage = await Package.findOneAndUpdate(
+      { id: docId },
+      { ...body, id: docId },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    res.json({ status: 'success', message: 'Paket tersimpan di MongoDB', data: savedPackage });
   } catch (error) {
     res.status(400).json({ status: 'error', message: error.message });
   }
@@ -80,15 +101,19 @@ app.put('/api/packages/:pkgId/redeem', async (req, res) => {
     const { slotIndex, payload } = req.body;
 
     const pkg = await Package.findOne({ id: pkgId });
-    if (!pkg) return res.status(404).json({ message: 'Paket tidak ditemukan' });
+    if (!pkg) return res.status(404).json({ status: 'error', message: 'Paket tidak ditemukan' });
 
-    const slot = pkg.slots.find(s => s.index === slotIndex);
+    const slot = pkg.slots.find(s => Number(s.index) === Number(slotIndex));
     if (slot) { Object.assign(slot, payload); }
 
-    if (pkg.slots.every(s => s.used === true)) { pkg.status = 'Selesai'; }
+    if (pkg.slots.length > 0 && pkg.slots.every(s => s.used === true)) {
+      pkg.status = 'Selesai';
+    } else {
+      pkg.status = 'Aktif';
+    }
 
     await pkg.save();
-    res.json({ status: 'success', message: 'Sesi berhasil dipotong' });
+    res.json({ status: 'success', message: 'Sesi berhasil dipotong', data: pkg });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
@@ -629,6 +654,169 @@ app.delete('/api/boarding-schedules/:id', async (req, res) => {
   try {
     await BoardingSchedule.findOneAndDelete({ id: req.params.id });
     res.json({ status: 'success', message: 'Jadwal boarding dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 8. SKEMA & ENDPOINT INVOICE & KWITANSI (/api/invoices)
+//    Mendukung penyimpanan & riwayat: Sales Invoice, Grooming Invoice, Kwitansi
+// ============================================================================
+const invoiceSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  serial: { type: String, required: true },
+  type: { type: String, required: true, enum: ['Sales', 'Grooming', 'Kwitansi'] },
+  customer: { type: String, default: 'Tanpa Nama' },
+  date: { type: String, default: '' },
+  total: { type: String, default: '0' },
+  paperSize: { type: String, default: 'a5' },
+  details: { type: Object, default: {} }
+}, { timestamps: true, collection: 'invoices' });
+
+const Invoice = mongoose.model('Invoice', invoiceSchema);
+
+app.get('/api/invoices', async (req, res) => {
+  try {
+    const list = await Invoice.find().sort({ updatedAt: -1, createdAt: -1 }).limit(300);
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.post('/api/invoices', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    const savedItems = [];
+    for (const item of entries) {
+      if (!item || !item.serial || !item.type) continue;
+      const docId = String(item.id || `${item.type.toUpperCase()}-${item.serial}`);
+
+      const saved = await Invoice.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          serial: String(item.serial).trim(),
+          type: item.type,
+          customer: item.customer || 'Tanpa Nama',
+          date: item.date || '',
+          total: String(item.total || '0'),
+          paperSize: item.paperSize || 'a5',
+          details: item.details || {}
+        },
+        { upsert: true, new: true }
+      );
+      savedItems.push(saved);
+    }
+
+    const allInvoices = await Invoice.find().sort({ updatedAt: -1, createdAt: -1 }).limit(300);
+    res.json({
+      status: 'success',
+      message: 'Data Invoice / Kwitansi tersimpan di MongoDB',
+      saved: savedItems,
+      data: allInvoices
+    });
+  } catch (error) {
+    console.error('Error POST /api/invoices:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.delete('/api/invoices/:id', async (req, res) => {
+  try {
+    const target = req.params.id;
+    await Invoice.findOneAndDelete({
+      $or: [{ id: target }, { serial: target }]
+    });
+    res.json({ status: 'success', message: 'Invoice / Kwitansi dihapus dari MongoDB' });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+// ============================================================================
+// 9. SKEMA & ENDPOINT FORM PENDAFTARAN PAKET A4 (/api/enrollment-forms)
+//    Mendukung penyimpanan, riwayat, buka/edit & hapus Form Paket A4 di MongoDB
+// ============================================================================
+const enrollmentFormSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  formType: { type: String, required: true },
+  selectedPackage: { type: String, default: '' },
+  ownerName: { type: String, required: true },
+  phone: { type: String, default: '' },
+  petName: { type: String, default: '' },
+  breed: { type: String, default: '' },
+  weight: { type: String, default: '' },
+  address: { type: String, default: '' },
+  trainingDetails: { type: Object, default: {} },
+  signatureDataUrl: { type: String, default: '' },
+  dateStr: { type: String, default: '' }
+}, { timestamps: true, collection: 'enrollment_forms' });
+
+const EnrollmentForm = mongoose.model('EnrollmentForm', enrollmentFormSchema);
+
+app.get('/api/enrollment-forms', async (req, res) => {
+  try {
+    const list = await EnrollmentForm.find().sort({ updatedAt: -1, createdAt: -1 }).limit(300);
+    res.json({ status: 'success', data: list });
+  } catch (error) {
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.post('/api/enrollment-forms', async (req, res) => {
+  try {
+    const entries = Array.isArray(req.body.entries)
+      ? req.body.entries
+      : (Array.isArray(req.body) ? req.body : [req.body]);
+
+    const savedItems = [];
+    for (const item of entries) {
+      if (!item || !item.ownerName) continue;
+      const docId = String(item.id || `FRM-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`);
+
+      const saved = await EnrollmentForm.findOneAndUpdate(
+        { id: docId },
+        {
+          id: docId,
+          formType: item.formType || 'grooming-5-1',
+          selectedPackage: item.selectedPackage || '',
+          ownerName: item.ownerName,
+          phone: item.phone || '',
+          petName: item.petName || '',
+          breed: item.breed || '',
+          weight: item.weight || '',
+          address: item.address || '',
+          trainingDetails: item.trainingDetails || {},
+          signatureDataUrl: item.signatureDataUrl || '',
+          dateStr: item.dateStr || ''
+        },
+        { upsert: true, new: true }
+      );
+      savedItems.push(saved);
+    }
+
+    const allForms = await EnrollmentForm.find().sort({ updatedAt: -1, createdAt: -1 }).limit(300);
+    res.json({
+      status: 'success',
+      message: 'Form Pendaftaran Paket tersimpan di MongoDB',
+      saved: savedItems,
+      data: allForms
+    });
+  } catch (error) {
+    console.error('Error POST /api/enrollment-forms:', error);
+    res.status(500).json({ status: 'error', message: error.message });
+  }
+});
+
+app.delete('/api/enrollment-forms/:id', async (req, res) => {
+  try {
+    await EnrollmentForm.findOneAndDelete({ id: req.params.id });
+    res.json({ status: 'success', message: 'Form Pendaftaran Paket dihapus dari MongoDB' });
   } catch (error) {
     res.status(500).json({ status: 'error', message: error.message });
   }
