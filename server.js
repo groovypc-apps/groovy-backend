@@ -347,6 +347,10 @@ app.put('/api/links/sync', async (req, res) => {
         { upsert: true, new: true }
       );
     }
+    const validIds = list.filter(item => item && item.id).map(item => item.id);
+    if (validIds.length > 0 && req.body.replace !== false) {
+      await LauncherLink.deleteMany({ id: { $nin: validIds } });
+    }
     const all = await LauncherLink.find().sort({ order: 1, createdAt: 1 });
     res.json({ status: 'success', data: all });
   } catch (error) {
@@ -824,13 +828,17 @@ app.delete('/api/enrollment-forms/:id', async (req, res) => {
 
 // Route utama untuk menyajikan file aplikasi terpadu jika diakses via browser
 app.get('/', (req, res) => {
-  const unifiedFile = path.join(__dirname, 'groovy_pet_center_radio_03.html');
-  const indexFile = path.join(__dirname, 'index.html');
-  if (fs.existsSync(unifiedFile)) {
-    return res.sendFile(unifiedFile);
-  }
-  if (fs.existsSync(indexFile)) {
-    return res.sendFile(indexFile);
+  const candidateFiles = [
+    'groovy_pet_center_radio_03.html',
+    'groovy_pet_center_radio_03_aplikasi_terpadu.html',
+    'groovy_pet_center_radio_03_aplikasi_terpadu (6).html',
+    'index.html'
+  ];
+  for (const fileName of candidateFiles) {
+    const fullPath = path.join(__dirname, fileName);
+    if (fs.existsSync(fullPath)) {
+      return res.sendFile(fullPath);
+    }
   }
   res.json({ status: 'online', message: 'Groovy Pet Center Radio 03 API Server Active' });
 });
