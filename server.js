@@ -829,8 +829,12 @@ app.delete('/api/enrollment-forms/:id', async (req, res) => {
 // ============================================================================
 // 10. SKEMA & ENDPOINT ABSENSI KARYAWAN (/api/absensi)
 //     Menyimpan absen datang/pulang 18 karyawan di collection 'absensi_karyawan'
+//     + Pengaturan GPS (radius 500m Groovy Pet Center Radio) & status tepat waktu/telat
 // ============================================================================
 const ABSENSI_ADMIN_PASSWORD = process.env.ABSENSI_ADMIN_PASSWORD || 'Admin!2345';
+const DEFAULT_OFFICE_LAT = -6.2490868;
+const DEFAULT_OFFICE_LNG = 106.7929767;
+const DEFAULT_GPS_RADIUS = 500;
 
 const ABSENSI_EMPLOYEES = [
   { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR3' },
@@ -853,12 +857,45 @@ const ABSENSI_EMPLOYEES = [
   { nama: 'DIKI SUHARI', kode: 'DIKIR3' }
 ];
 
+const absensiSettingsSchema = new mongoose.Schema({
+  key: { type: String, required: true, unique: true, default: 'main' },
+  gpsEnabled: { type: Boolean, default: true },
+  officeLat: { type: Number, default: DEFAULT_OFFICE_LAT },
+  officeLng: { type: Number, default: DEFAULT_OFFICE_LNG },
+  radiusMeters: { type: Number, default: DEFAULT_GPS_RADIUS }
+}, { timestamps: true, collection: 'absensi_settings' });
+
+const AbsensiSettings = mongoose.model('AbsensiSettings', absensiSettingsSchema);
+
+async function getAbsensiSettings() {
+  let cfg = await AbsensiSettings.findOne({ key: 'main' }).lean();
+  if (!cfg) {
+    cfg = await AbsensiSettings.create({
+      key: 'main',
+      gpsEnabled: true,
+      officeLat: DEFAULT_OFFICE_LAT,
+      officeLng: DEFAULT_OFFICE_LNG,
+      radiusMeters: DEFAULT_GPS_RADIUS
+    });
+  }
+  return {
+    gpsEnabled: Boolean(cfg.gpsEnabled),
+    officeLat: typeof cfg.officeLat === 'number' ? cfg.officeLat : DEFAULT_OFFICE_LAT,
+    officeLng: typeof cfg.officeLng === 'number' ? cfg.officeLng : DEFAULT_OFFICE_LNG,
+    radiusMeters: typeof cfg.radiusMeters === 'number' && cfg.radiusMeters > 0 ? cfg.radiusMeters : DEFAULT_GPS_RADIUS
+  };
+}
+
 const absensiSchema = new mongoose.Schema({
   tanggal: { type: String, required: true, index: true }, // Format YYYY-MM-DD (WIB)
   nama: { type: String, required: true },
   kode: { type: String, required: true, index: true },
   jamDatang: { type: String, default: '' },
   jamPulang: { type: String, default: '' },
+  statusDatang: { type: String, default: '' }, // 'Tepat Waktu' | 'Telat'
+  statusPulang: { type: String, default: '' }, // 'Tepat Waktu' | 'Pulang Cepat' | ''
+  jarakDatangM: { type: Number, default: null },
+  jarakPulangM: { type: Number, default: null },
   datangMs: { type: Number, default: null },
   pulangMs: { type: Number, default: null },
   updatedAt: { type: Number, default: () => Date.now() }
@@ -884,16 +921,99 @@ function getWibDateParts(date = new Date()) {
     parts[p.type] = p.value;
   }
   const hour = parts.hour === '24' ? '00' : parts.hour;
-  return {
-    tanggal: `${parts.year}-${parts.month}-${parts.day}`,
-    jam: `${hour}:${parts.minute}:${parts.second}`
-  };
+  const tanggal = `${parts.year}-${parts.month}-${parts.day}`;
+  const jam = `${hour}:${parts.minute}:${parts.second}`;
+  const dayOfWeek = new Date(`${tanggal}T12:00:00+07:00`).getDay(); // 0 = Minggu, 1-6 = Senin-Sabtu
+  return { tanggal, jam, dayOfWeek };
+}
+
+function timeStrToSeconds(timeStr) {
+  if (!timeStr) return null;
+  const parts = String(timeStr).split(':').map(Number);
+  if (parts.length < 2 || parts.some(Number.isNaN)) return null;
+  return parts[0] * 3600 + parts[1] * 60 + (parts[2] || 0);
+}
+
+// Senin-Sabtu: 09:00 - 17:00 | Minggu: 10:00 - 16:00
+function getShiftBoundsSeconds(tanggal) {
+  const dayOfWeek = new Date(`${tanggal}T12:00:00+07:00`).getDay();
+  if (dayOfWeek === 0) {
+    return { startSec: 10 * 3600, endSec: 16 * 3600 };
+  }
+  return { startSec: 9 * 3600, endSec: 17 * 3600 };
+}
+
+function evaluateStatusDatang(tanggal, jamDatang) {
+  const sec = timeStrToSeconds(jamDatang);
+  if (sec === null) return '';
+  const { startSec } = getShiftBoundsSeconds(tanggal);
+  return sec > startSec ? 'Telat' : 'Tepat Waktu';
+}
+
+function evaluateStatusPulang(tanggal, jamPulang) {
+  const sec = timeStrToSeconds(jamPulang);
+  if (sec === null) return '';
+  const { endSec } = getShiftBoundsSeconds(tanggal);
+  return sec < endSec ? 'Pulang Cepat' : 'Tepat Waktu';
+}
+
+function calcDistanceMeters(lat1, lng1, lat2, lng2) {
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
 }
 
 function findAbsensiEmployee(rawKode) {
   const clean = String(rawKode || '').trim().toUpperCase();
   return ABSENSI_EMPLOYEES.find((e) => e.kode.toUpperCase() === clean) || null;
 }
+
+app.get('/api/absensi/settings', async (req, res) => {
+  try {
+    const cfg = await getAbsensiSettings();
+    res.json(cfg);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal memuat pengaturan GPS.' });
+  }
+});
+
+app.put('/api/absensi/settings', async (req, res) => {
+  try {
+    const adminPass = req.headers['x-admin-password'];
+    if (adminPass !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const gpsEnabled = Boolean(req.body.gpsEnabled);
+    const radiusMeters = Math.max(50, Math.min(5000, Number(req.body.radiusMeters) || DEFAULT_GPS_RADIUS));
+    const updated = await AbsensiSettings.findOneAndUpdate(
+      { key: 'main' },
+      {
+        key: 'main',
+        gpsEnabled,
+        officeLat: DEFAULT_OFFICE_LAT,
+        officeLng: DEFAULT_OFFICE_LNG,
+        radiusMeters
+      },
+      { upsert: true, new: true }
+    ).lean();
+    res.json({
+      gpsEnabled: Boolean(updated.gpsEnabled),
+      officeLat: updated.officeLat,
+      officeLng: updated.officeLng,
+      radiusMeters: updated.radiusMeters
+    });
+  } catch (error) {
+    console.error('Error PUT /api/absensi/settings:', error);
+    res.status(500).json({ error: 'Gagal menyimpan pengaturan GPS.' });
+  }
+});
 
 app.get('/api/absensi', async (req, res) => {
   try {
@@ -905,6 +1025,10 @@ app.get('/api/absensi', async (req, res) => {
       kode: item.kode,
       jamDatang: item.jamDatang || '',
       jamPulang: item.jamPulang || '',
+      statusDatang: item.statusDatang || evaluateStatusDatang(item.tanggal, item.jamDatang),
+      statusPulang: item.statusPulang || evaluateStatusPulang(item.tanggal, item.jamPulang),
+      jarakDatangM: typeof item.jarakDatangM === 'number' ? item.jarakDatangM : null,
+      jarakPulangM: typeof item.jarakPulangM === 'number' ? item.jarakPulangM : null,
       datangMs: item.datangMs,
       pulangMs: item.pulangMs,
       updatedAt: item.updatedAt
@@ -923,6 +1047,22 @@ app.post('/api/absensi/datang', async (req, res) => {
       return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
     }
 
+    const cfg = await getAbsensiSettings();
+    let jarakM = null;
+    if (cfg.gpsEnabled) {
+      const lat = Number(req.body.lat);
+      const lng = Number(req.body.lng);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return res.status(400).json({ error: 'GPS wajib aktif. Izinkan akses lokasi di browser Anda untuk absen.' });
+      }
+      jarakM = calcDistanceMeters(lat, lng, cfg.officeLat, cfg.officeLng);
+      if (jarakM > cfg.radiusMeters) {
+        return res.status(403).json({
+          error: `Anda berada di luar radius absensi (${jarakM} m dari Groovy Pet Center Radio, maks ${cfg.radiusMeters} m).`
+        });
+      }
+    }
+
     const now = new Date();
     const { tanggal, jam } = getWibDateParts(now);
     const nowMs = now.getTime();
@@ -934,19 +1074,25 @@ app.post('/api/absensi/datang', async (req, res) => {
       });
     }
 
+    const statusDatang = evaluateStatusDatang(tanggal, jam);
+
     const created = await Absensi.create({
       tanggal,
       nama: emp.nama,
       kode: emp.kode,
       jamDatang: jam,
       jamPulang: '',
+      statusDatang,
+      statusPulang: '',
+      jarakDatangM: jarakM,
+      jarakPulangM: null,
       datangMs: nowMs,
       pulangMs: null,
       updatedAt: nowMs
     });
 
     res.status(201).json({
-      message: `${emp.nama} berhasil Absen Datang (${jam})`,
+      message: `${emp.nama} berhasil Absen Datang (${jam} • ${statusDatang})`,
       record: {
         id: String(created._id),
         tanggal: created.tanggal,
@@ -954,6 +1100,10 @@ app.post('/api/absensi/datang', async (req, res) => {
         kode: created.kode,
         jamDatang: created.jamDatang,
         jamPulang: created.jamPulang,
+        statusDatang: created.statusDatang,
+        statusPulang: created.statusPulang,
+        jarakDatangM: created.jarakDatangM,
+        jarakPulangM: created.jarakPulangM,
         datangMs: created.datangMs,
         pulangMs: created.pulangMs,
         updatedAt: created.updatedAt
@@ -970,6 +1120,22 @@ app.post('/api/absensi/pulang', async (req, res) => {
     const emp = findAbsensiEmployee(req.body.kode);
     if (!emp) {
       return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
+    }
+
+    const cfg = await getAbsensiSettings();
+    let jarakM = null;
+    if (cfg.gpsEnabled) {
+      const lat = Number(req.body.lat);
+      const lng = Number(req.body.lng);
+      if (Number.isNaN(lat) || Number.isNaN(lng)) {
+        return res.status(400).json({ error: 'GPS wajib aktif. Izinkan akses lokasi di browser Anda untuk absen.' });
+      }
+      jarakM = calcDistanceMeters(lat, lng, cfg.officeLat, cfg.officeLng);
+      if (jarakM > cfg.radiusMeters) {
+        return res.status(403).json({
+          error: `Anda berada di luar radius absensi (${jarakM} m dari Groovy Pet Center Radio, maks ${cfg.radiusMeters} m).`
+        });
+      }
     }
 
     const now = new Date();
@@ -989,13 +1155,17 @@ app.post('/api/absensi/pulang', async (req, res) => {
       });
     }
 
+    const statusPulang = evaluateStatusPulang(tanggal, jam);
+
     existing.jamPulang = jam;
+    existing.statusPulang = statusPulang;
+    existing.jarakPulangM = jarakM;
     existing.pulangMs = nowMs;
     existing.updatedAt = nowMs;
     await existing.save();
 
     res.json({
-      message: `${emp.nama} berhasil Absen Pulang (${jam})`,
+      message: `${emp.nama} berhasil Absen Pulang (${jam} • ${statusPulang})`,
       record: {
         id: String(existing._id),
         tanggal: existing.tanggal,
@@ -1003,6 +1173,10 @@ app.post('/api/absensi/pulang', async (req, res) => {
         kode: existing.kode,
         jamDatang: existing.jamDatang,
         jamPulang: existing.jamPulang,
+        statusDatang: existing.statusDatang || evaluateStatusDatang(existing.tanggal, existing.jamDatang),
+        statusPulang: existing.statusPulang,
+        jarakDatangM: existing.jarakDatangM,
+        jarakPulangM: existing.jarakPulangM,
         datangMs: existing.datangMs,
         pulangMs: existing.pulangMs,
         updatedAt: existing.updatedAt
