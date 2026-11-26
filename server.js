@@ -1427,6 +1427,7 @@ const timeOffSchema = new mongoose.Schema({
   tanggalMulai: { type: String, required: true },
   tanggalSelesai: { type: String, required: true },
   jumlahHari: { type: Number, default: 1 },
+  jamRequest: { type: String, default: '' },
   alasan: { type: String, default: '' },
   status: { type: String, default: 'Menunggu', enum: ['Menunggu', 'Disetujui', 'Ditolak'] },
   approvedBy: { type: String, default: '' },
@@ -1444,6 +1445,9 @@ function computeTimeOffKodeRekap(jenis, subIzin) {
     if (subIzin === 'Sebelum Istirahat') return 'IZ-SB';
     if (subIzin === 'Sesudah Istirahat') return 'IZ-SS';
     return 'IZ-FT';
+  }
+  if (jenis === 'Request Absen') {
+    return subIzin === 'Absen Pulang' ? 'REQ-P' : 'REQ-M';
   }
   return 'LAIN';
 }
@@ -1469,6 +1473,7 @@ app.get('/api/timeoff', async (req, res) => {
       tanggalMulai: item.tanggalMulai,
       tanggalSelesai: item.tanggalSelesai,
       jumlahHari: item.jumlahHari || 1,
+      jamRequest: item.jamRequest || '',
       alasan: item.alasan || '',
       status: item.status || 'Menunggu',
       approvedBy: item.approvedBy || '',
@@ -1489,22 +1494,34 @@ app.post('/api/timeoff', async (req, res) => {
       return res.status(404).json({ error: 'Kode akses karyawan tidak ditemukan.' });
     }
     const jenis = String(req.body.jenis || '').trim();
-    const allowedJenis = ['Cuti Tahunan', 'Libur Masuk Minggu', 'Sakit', 'Izin'];
+    const allowedJenis = ['Cuti Tahunan', 'Libur Masuk Minggu', 'Sakit', 'Izin', 'Request Absen'];
     if (!allowedJenis.includes(jenis)) {
-      return res.status(400).json({ error: 'Jenis Time Off tidak valid.' });
+      return res.status(400).json({ error: 'Jenis pengajuan tidak valid.' });
     }
 
     let subIzin = '';
+    let jamRequest = '';
     if (jenis === 'Izin') {
       subIzin = String(req.body.subIzin || '').trim();
       const allowedSub = ['Full Time', 'Sebelum Istirahat', 'Sesudah Istirahat'];
       if (!allowedSub.includes(subIzin)) {
         return res.status(400).json({ error: 'Pilih kategori Izin (Full Time, Sebelum Istirahat, atau Sesudah Istirahat).' });
       }
+    } else if (jenis === 'Request Absen') {
+      subIzin = String(req.body.subIzin || '').trim();
+      if (!['Absen Datang', 'Absen Pulang'].includes(subIzin)) {
+        return res.status(400).json({ error: 'Pilih jenis Request Absen (Absen Datang atau Absen Pulang).' });
+      }
+      jamRequest = normalizeTimeStr(req.body.jamRequest);
+      if (!jamRequest) {
+        return res.status(400).json({ error: 'Jam absensi wajib diisi untuk Request Absen.' });
+      }
     }
 
     const tanggalMulai = String(req.body.tanggalMulai || '').trim();
-    const tanggalSelesai = String(req.body.tanggalSelesai || tanggalMulai).trim();
+    const tanggalSelesai = jenis === 'Request Absen'
+      ? tanggalMulai
+      : String(req.body.tanggalSelesai || tanggalMulai).trim();
     const jumlahHari = calcInclusiveDays(tanggalMulai, tanggalSelesai);
     if (!tanggalMulai || jumlahHari <= 0) {
       return res.status(400).json({ error: 'Rentang tanggal tidak valid. Tanggal selesai tidak boleh sebelum tanggal mulai.' });
@@ -1523,6 +1540,7 @@ app.post('/api/timeoff', async (req, res) => {
       tanggalMulai,
       tanggalSelesai,
       jumlahHari,
+      jamRequest,
       alasan,
       status: 'Menunggu',
       approvedBy: '',
@@ -1543,6 +1561,7 @@ app.post('/api/timeoff', async (req, res) => {
         tanggalMulai: created.tanggalMulai,
         tanggalSelesai: created.tanggalSelesai,
         jumlahHari: created.jumlahHari,
+        jamRequest: created.jamRequest,
         alasan: created.alasan,
         status: created.status,
         approvedBy: created.approvedBy,
@@ -1583,6 +1602,67 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
     item.approvedAt = `${tanggal} ${jam.slice(0, 5)} WIB`;
     await item.save();
 
+    // Jika Request Absen disetujui Kepala Toko, otomatis simpan/perbarui ke data absensi karyawan
+    if (item.jenis === 'Request Absen' && newStatus === 'Disetujui' && item.jamRequest) {
+      const tgl = item.tanggalMulai;
+      const approvedIzin = await getApprovedIzinKode(item.kode, tgl);
+      let existingAbsen = await Absensi.findOne({ tanggal: tgl, kode: item.kode });
+
+      if (item.subIzin === 'Absen Datang') {
+        const datangMs = wibDateTimeToMs(tgl, item.jamRequest);
+        const stDatang = evaluateStatusDatang(tgl, item.jamRequest, approvedIzin);
+        if (existingAbsen) {
+          existingAbsen.jamDatang = item.jamRequest;
+          existingAbsen.statusDatang = stDatang;
+          existingAbsen.datangMs = datangMs;
+          existingAbsen.updatedAt = Date.now();
+          await existingAbsen.save();
+        } else {
+          await Absensi.create({
+            tanggal: tgl,
+            nama: item.nama,
+            kode: item.kode,
+            kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
+            jamDatang: item.jamRequest,
+            jamPulang: '',
+            statusDatang: stDatang,
+            statusPulang: '',
+            jarakDatangM: null,
+            jarakPulangM: null,
+            datangMs,
+            pulangMs: null,
+            updatedAt: Date.now()
+          });
+        }
+      } else if (item.subIzin === 'Absen Pulang') {
+        const pulangMs = wibDateTimeToMs(tgl, item.jamRequest);
+        const stPulang = evaluateStatusPulang(tgl, item.jamRequest, approvedIzin);
+        if (existingAbsen) {
+          existingAbsen.jamPulang = item.jamRequest;
+          existingAbsen.statusPulang = stPulang;
+          existingAbsen.pulangMs = pulangMs;
+          existingAbsen.updatedAt = Date.now();
+          await existingAbsen.save();
+        } else {
+          await Absensi.create({
+            tanggal: tgl,
+            nama: item.nama,
+            kode: item.kode,
+            kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
+            jamDatang: '',
+            jamPulang: item.jamRequest,
+            statusDatang: '',
+            statusPulang: stPulang,
+            jarakDatangM: null,
+            jarakPulangM: null,
+            datangMs: null,
+            pulangMs,
+            updatedAt: Date.now()
+          });
+        }
+      }
+    }
+
     // Perbarui otomatis status absensi yang sudah ada pada rentang tanggal IZ-SB / IZ-SS
     if (['IZ-SB', 'IZ-SS'].includes(item.kodeRekap)) {
       const affected = await Absensi.find({
@@ -1610,6 +1690,7 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
         tanggalMulai: item.tanggalMulai,
         tanggalSelesai: item.tanggalSelesai,
         jumlahHari: item.jumlahHari,
+        jamRequest: item.jamRequest,
         alasan: item.alasan,
         status: item.status,
         approvedBy: item.approvedBy,
