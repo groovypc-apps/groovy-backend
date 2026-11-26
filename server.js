@@ -837,24 +837,24 @@ const DEFAULT_OFFICE_LNG = 106.7929767;
 const DEFAULT_GPS_RADIUS = 500;
 
 const ABSENSI_EMPLOYEES = [
-  { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR3' },
-  { nama: 'PAULUS KUAT', kode: 'PAULUSR3' },
-  { nama: 'KASRIN', kode: 'KASRINR3' },
-  { nama: 'WIKE', kode: 'WIKER3' },
-  { nama: 'YOEL ALIANSAH', kode: 'YOELR3' },
-  { nama: 'PRAYOGA', kode: 'YOGAR3' },
-  { nama: 'YUDI MAKATIPU', kode: 'YUDIR3' },
-  { nama: 'YOHANES YUNTORO', kode: 'TOROR3' },
-  { nama: 'EDI WARSONO', kode: 'EDIR3' },
-  { nama: 'RISMANTO', kode: 'RISMANTO' },
-  { nama: 'EDI HARDIANTO', kode: 'ANTOR3' },
-  { nama: 'MOKO', kode: 'MOKOR3' },
-  { nama: 'LAZUARDI', kode: 'LAZUARDIR3' },
-  { nama: 'ANGGI ERMAWAN', kode: 'ANGGIR3' },
-  { nama: 'INDRA', kode: 'INDRAR3' },
-  { nama: 'WAHYU', kode: 'WAHYUR3' },
-  { nama: 'FADLI RAKA', kode: 'RAKAR3' },
-  { nama: 'DIKI SUHARI', kode: 'DIKIR3' }
+  { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR01', kategori: 'Kepala Toko' },
+  { nama: 'PAULUS KUAT', kode: 'PAULUSR02', kategori: 'Staff' },
+  { nama: 'KASRIN', kode: 'KASRINR03', kategori: 'Staff' },
+  { nama: 'WIKE', kode: 'WIKER04', kategori: 'Staff' },
+  { nama: 'YOEL ALIANSAH', kode: 'YOELR05', kategori: 'Staff' },
+  { nama: 'PRAYOGA', kode: 'YOGAR06', kategori: 'Staff' },
+  { nama: 'YUDI MAKATIPU', kode: 'YUDIR07', kategori: 'Staff' },
+  { nama: 'YOHANES YUNTORO', kode: 'TOROR08', kategori: 'Groomer' },
+  { nama: 'EDI WARSONO', kode: 'EDIR09', kategori: 'Groomer' },
+  { nama: 'RISMANTO', kode: 'ARISR10', kategori: 'Groomer' },
+  { nama: 'EDI HARDIANTO', kode: 'ANTOR11', kategori: 'Groomer' },
+  { nama: 'MOKO', kode: 'MOKOR12', kategori: 'Groomer' },
+  { nama: 'LAZUARDI', kode: 'ARDIR13', kategori: 'Groomer' },
+  { nama: 'ANGGI ERMAWAN', kode: 'ANGGIR14', kategori: 'Groomer' },
+  { nama: 'INDRA', kode: 'INDRAR15', kategori: 'Groomer' },
+  { nama: 'WAHYU', kode: 'WAHYUR16', kategori: 'Groomer' },
+  { nama: 'FADLI RAKA', kode: 'RAKAR17', kategori: 'Groomer' },
+  { nama: 'DIKI SUHARI', kode: 'DIKIR18', kategori: 'Groomer' }
 ];
 
 const absensiSettingsSchema = new mongoose.Schema({
@@ -890,6 +890,7 @@ const absensiSchema = new mongoose.Schema({
   tanggal: { type: String, required: true, index: true }, // Format YYYY-MM-DD (WIB)
   nama: { type: String, required: true },
   kode: { type: String, required: true, index: true },
+  kategori: { type: String, default: '' },
   jamDatang: { type: String, default: '' },
   jamPulang: { type: String, default: '' },
   statusDatang: { type: String, default: '' }, // 'Tepat Waktu' | 'Telat'
@@ -975,6 +976,14 @@ function findAbsensiEmployee(rawKode) {
   return ABSENSI_EMPLOYEES.find((e) => e.kode.toUpperCase() === clean) || null;
 }
 
+function resolveEmployeeKategori(kode, nama) {
+  const byKode = findAbsensiEmployee(kode);
+  if (byKode) return byKode.kategori;
+  const cleanNama = String(nama || '').trim().toUpperCase();
+  const byNama = ABSENSI_EMPLOYEES.find((e) => e.nama.toUpperCase() === cleanNama);
+  return byNama ? byNama.kategori : '';
+}
+
 app.get('/api/absensi/settings', async (req, res) => {
   try {
     const cfg = await getAbsensiSettings();
@@ -1023,6 +1032,7 @@ app.get('/api/absensi', async (req, res) => {
       tanggal: item.tanggal,
       nama: item.nama,
       kode: item.kode,
+      kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
       jamDatang: item.jamDatang || '',
       jamPulang: item.jamPulang || '',
       statusDatang: item.statusDatang || evaluateStatusDatang(item.tanggal, item.jamDatang),
@@ -1080,6 +1090,7 @@ app.post('/api/absensi/datang', async (req, res) => {
       tanggal,
       nama: emp.nama,
       kode: emp.kode,
+      kategori: emp.kategori,
       jamDatang: jam,
       jamPulang: '',
       statusDatang,
@@ -1098,6 +1109,7 @@ app.post('/api/absensi/datang', async (req, res) => {
         tanggal: created.tanggal,
         nama: created.nama,
         kode: created.kode,
+        kategori: created.kategori || resolveEmployeeKategori(created.kode, created.nama),
         jamDatang: created.jamDatang,
         jamPulang: created.jamPulang,
         statusDatang: created.statusDatang,
@@ -1171,6 +1183,7 @@ app.post('/api/absensi/pulang', async (req, res) => {
         tanggal: existing.tanggal,
         nama: existing.nama,
         kode: existing.kode,
+        kategori: existing.kategori || resolveEmployeeKategori(existing.kode, existing.nama),
         jamDatang: existing.jamDatang,
         jamPulang: existing.jamPulang,
         statusDatang: existing.statusDatang || evaluateStatusDatang(existing.tanggal, existing.jamDatang),
@@ -1248,6 +1261,7 @@ app.post('/api/absensi/manual', async (req, res) => {
       tanggal,
       nama: emp.nama,
       kode: emp.kode,
+      kategori: emp.kategori,
       jamDatang,
       jamPulang,
       statusDatang: evaluateStatusDatang(tanggal, jamDatang),
@@ -1266,6 +1280,7 @@ app.post('/api/absensi/manual', async (req, res) => {
         tanggal: created.tanggal,
         nama: created.nama,
         kode: created.kode,
+        kategori: created.kategori || resolveEmployeeKategori(created.kode, created.nama),
         jamDatang: created.jamDatang,
         jamPulang: created.jamPulang,
         statusDatang: created.statusDatang,
@@ -1334,6 +1349,7 @@ app.put('/api/absensi/:id', async (req, res) => {
         tanggal: existing.tanggal,
         nama: existing.nama,
         kode: existing.kode,
+        kategori: existing.kategori || resolveEmployeeKategori(existing.kode, existing.nama),
         jamDatang: existing.jamDatang,
         jamPulang: existing.jamPulang,
         statusDatang: existing.statusDatang,
