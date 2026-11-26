@@ -826,6 +826,231 @@ app.delete('/api/enrollment-forms/:id', async (req, res) => {
   }
 });
 
+// ============================================================================
+// 10. SKEMA & ENDPOINT ABSENSI KARYAWAN (/api/absensi)
+//     Menyimpan absen datang/pulang 18 karyawan di collection 'absensi_karyawan'
+// ============================================================================
+const ABSENSI_ADMIN_PASSWORD = process.env.ABSENSI_ADMIN_PASSWORD || 'Admin!2345';
+
+const ABSENSI_EMPLOYEES = [
+  { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR3' },
+  { nama: 'PAULUS KUAT', kode: 'PAULUSR3' },
+  { nama: 'KASRIN', kode: 'KASRINR3' },
+  { nama: 'WIKE', kode: 'WIKER3' },
+  { nama: 'YOEL ALIANSAH', kode: 'YOELR3' },
+  { nama: 'PRAYOGA', kode: 'YOGAR3' },
+  { nama: 'YUDI MAKATIPU', kode: 'YUDIR3' },
+  { nama: 'YOHANES YUNTORO', kode: 'TOROR3' },
+  { nama: 'EDI WARSONO', kode: 'EDIR3' },
+  { nama: 'RISMANTO', kode: 'RISMANTO' },
+  { nama: 'EDI HARDIANTO', kode: 'ANTOR3' },
+  { nama: 'MOKO', kode: 'MOKOR3' },
+  { nama: 'LAZUARDI', kode: 'LAZUARDIR3' },
+  { nama: 'ANGGI ERMAWAN', kode: 'ANGGIR3' },
+  { nama: 'INDRA', kode: 'INDRAR3' },
+  { nama: 'WAHYU', kode: 'WAHYUR3' },
+  { nama: 'FADLI RAKA', kode: 'RAKAR3' },
+  { nama: 'DIKI SUHARI', kode: 'DIKIR3' }
+];
+
+const absensiSchema = new mongoose.Schema({
+  tanggal: { type: String, required: true, index: true }, // Format YYYY-MM-DD (WIB)
+  nama: { type: String, required: true },
+  kode: { type: String, required: true, index: true },
+  jamDatang: { type: String, default: '' },
+  jamPulang: { type: String, default: '' },
+  datangMs: { type: Number, default: null },
+  pulangMs: { type: Number, default: null },
+  updatedAt: { type: Number, default: () => Date.now() }
+}, { timestamps: true, collection: 'absensi_karyawan' });
+
+absensiSchema.index({ tanggal: 1, kode: 1 }, { unique: true });
+
+const Absensi = mongoose.model('Absensi', absensiSchema);
+
+function getWibDateParts(date = new Date()) {
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Jakarta',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  });
+  const parts = {};
+  for (const p of formatter.formatToParts(date)) {
+    parts[p.type] = p.value;
+  }
+  const hour = parts.hour === '24' ? '00' : parts.hour;
+  return {
+    tanggal: `${parts.year}-${parts.month}-${parts.day}`,
+    jam: `${hour}:${parts.minute}:${parts.second}`
+  };
+}
+
+function findAbsensiEmployee(rawKode) {
+  const clean = String(rawKode || '').trim().toUpperCase();
+  return ABSENSI_EMPLOYEES.find((e) => e.kode.toUpperCase() === clean) || null;
+}
+
+app.get('/api/absensi', async (req, res) => {
+  try {
+    const list = await Absensi.find().sort({ updatedAt: -1 }).lean();
+    const mapped = list.map((item) => ({
+      id: String(item._id),
+      tanggal: item.tanggal,
+      nama: item.nama,
+      kode: item.kode,
+      jamDatang: item.jamDatang || '',
+      jamPulang: item.jamPulang || '',
+      datangMs: item.datangMs,
+      pulangMs: item.pulangMs,
+      updatedAt: item.updatedAt
+    }));
+    res.json(mapped);
+  } catch (error) {
+    console.error('Error GET /api/absensi:', error);
+    res.status(500).json({ error: 'Gagal memuat data absensi dari MongoDB.' });
+  }
+});
+
+app.post('/api/absensi/datang', async (req, res) => {
+  try {
+    const emp = findAbsensiEmployee(req.body.kode);
+    if (!emp) {
+      return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
+    }
+
+    const now = new Date();
+    const { tanggal, jam } = getWibDateParts(now);
+    const nowMs = now.getTime();
+
+    const existing = await Absensi.findOne({ tanggal, kode: emp.kode });
+    if (existing) {
+      return res.status(400).json({
+        error: `${emp.nama} sudah melakukan Absen Datang hari ini pukul ${existing.jamDatang}.`
+      });
+    }
+
+    const created = await Absensi.create({
+      tanggal,
+      nama: emp.nama,
+      kode: emp.kode,
+      jamDatang: jam,
+      jamPulang: '',
+      datangMs: nowMs,
+      pulangMs: null,
+      updatedAt: nowMs
+    });
+
+    res.status(201).json({
+      message: `${emp.nama} berhasil Absen Datang (${jam})`,
+      record: {
+        id: String(created._id),
+        tanggal: created.tanggal,
+        nama: created.nama,
+        kode: created.kode,
+        jamDatang: created.jamDatang,
+        jamPulang: created.jamPulang,
+        datangMs: created.datangMs,
+        pulangMs: created.pulangMs,
+        updatedAt: created.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error POST /api/absensi/datang:', error);
+    res.status(500).json({ error: 'Terjadi kesalahan saat menyimpan Absen Datang.' });
+  }
+});
+
+app.post('/api/absensi/pulang', async (req, res) => {
+  try {
+    const emp = findAbsensiEmployee(req.body.kode);
+    if (!emp) {
+      return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
+    }
+
+    const now = new Date();
+    const { tanggal, jam } = getWibDateParts(now);
+    const nowMs = now.getTime();
+
+    const existing = await Absensi.findOne({ tanggal, kode: emp.kode });
+    if (!existing) {
+      return res.status(400).json({
+        error: `${emp.nama} belum melakukan Absen Datang hari ini.`
+      });
+    }
+
+    if (existing.jamPulang) {
+      return res.status(400).json({
+        error: `${emp.nama} sudah melakukan Absen Pulang hari ini pukul ${existing.jamPulang}.`
+      });
+    }
+
+    existing.jamPulang = jam;
+    existing.pulangMs = nowMs;
+    existing.updatedAt = nowMs;
+    await existing.save();
+
+    res.json({
+      message: `${emp.nama} berhasil Absen Pulang (${jam})`,
+      record: {
+        id: String(existing._id),
+        tanggal: existing.tanggal,
+        nama: existing.nama,
+        kode: existing.kode,
+        jamDatang: existing.jamDatang,
+        jamPulang: existing.jamPulang,
+        datangMs: existing.datangMs,
+        pulangMs: existing.pulangMs,
+        updatedAt: existing.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error POST /api/absensi/pulang:', error);
+    res.status(500).json({ error: 'Terjadi kesalahan saat menyimpan Absen Pulang.' });
+  }
+});
+
+app.post('/api/admin/verify', (req, res) => {
+  const { password } = req.body || {};
+  if (password === ABSENSI_ADMIN_PASSWORD) {
+    return res.json({ ok: true });
+  }
+  return res.status(401).json({ ok: false, error: 'Password salah. Silakan coba lagi.' });
+});
+
+app.delete('/api/absensi/:id', async (req, res) => {
+  try {
+    const adminPass = req.headers['x-admin-password'];
+    if (adminPass !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const deleted = await Absensi.findByIdAndDelete(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({ error: 'Data absensi tidak ditemukan.' });
+    }
+    res.json({ ok: true, id: req.params.id });
+  } catch (error) {
+    console.error('Error DELETE /api/absensi/:id:', error);
+    res.status(500).json({ error: 'Gagal menghapus data absensi.' });
+  }
+});
+
+// Route khusus untuk membuka halaman App Absensi di /absensi
+app.get('/absensi', (req, res) => {
+  const candidates = ['app_absensi.html', 'app_absensi_mongodb.html'];
+  for (const name of candidates) {
+    const absensiFile = path.join(__dirname, name);
+    if (fs.existsSync(absensiFile)) {
+      return res.sendFile(absensiFile);
+    }
+  }
+  res.status(404).send('File app_absensi.html belum ditemukan di folder server.');
+});
+
 // Route utama untuk menyajikan file aplikasi terpadu jika diakses via browser
 app.get('/', (req, res) => {
   const candidateFiles = [
