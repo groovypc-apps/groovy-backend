@@ -1196,6 +1196,161 @@ app.post('/api/admin/verify', (req, res) => {
   return res.status(401).json({ ok: false, error: 'Password salah. Silakan coba lagi.' });
 });
 
+function normalizeTimeStr(raw) {
+  const str = String(raw || '').trim();
+  if (!str) return '';
+  const parts = str.split(':');
+  if (parts.length === 2) return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}:00`;
+  if (parts.length >= 3) return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}:${parts[2].padStart(2, '0')}`;
+  return str;
+}
+
+function wibDateTimeToMs(tanggal, jam) {
+  if (!tanggal || !jam) return null;
+  const norm = normalizeTimeStr(jam);
+  const dt = new Date(`${tanggal}T${norm}+07:00`);
+  return Number.isNaN(dt.getTime()) ? null : dt.getTime();
+}
+
+// API: Input Manual Absensi (Khusus Admin)
+app.post('/api/absensi/manual', async (req, res) => {
+  try {
+    const adminPass = req.headers['x-admin-password'];
+    if (adminPass !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const emp = findAbsensiEmployee(req.body.kode);
+    if (!emp) {
+      return res.status(400).json({ error: 'Karyawan tidak valid.' });
+    }
+    const tanggal = String(req.body.tanggal || '').trim();
+    const jamDatang = normalizeTimeStr(req.body.jamDatang);
+    const jamPulang = normalizeTimeStr(req.body.jamPulang);
+
+    if (!tanggal || !jamDatang) {
+      return res.status(400).json({ error: 'Tanggal dan Jam Datang wajib diisi.' });
+    }
+
+    const existing = await Absensi.findOne({ tanggal, kode: emp.kode });
+    if (existing) {
+      return res.status(400).json({
+        error: `Data absensi ${emp.nama} pada ${tanggal} sudah ada. Gunakan tombol Edit pada tabel.`
+      });
+    }
+
+    const datangMs = wibDateTimeToMs(tanggal, jamDatang);
+    const pulangMs = jamPulang ? wibDateTimeToMs(tanggal, jamPulang) : null;
+    if (pulangMs !== null && datangMs !== null && pulangMs < datangMs) {
+      return res.status(400).json({ error: 'Jam Pulang tidak boleh lebih awal dari Jam Datang.' });
+    }
+
+    const created = await Absensi.create({
+      tanggal,
+      nama: emp.nama,
+      kode: emp.kode,
+      jamDatang,
+      jamPulang,
+      statusDatang: evaluateStatusDatang(tanggal, jamDatang),
+      statusPulang: jamPulang ? evaluateStatusPulang(tanggal, jamPulang) : '',
+      jarakDatangM: null,
+      jarakPulangM: null,
+      datangMs,
+      pulangMs,
+      updatedAt: Date.now()
+    });
+
+    res.status(201).json({
+      message: `Input manual absensi ${emp.nama} (${tanggal}) berhasil disimpan.`,
+      record: {
+        id: String(created._id),
+        tanggal: created.tanggal,
+        nama: created.nama,
+        kode: created.kode,
+        jamDatang: created.jamDatang,
+        jamPulang: created.jamPulang,
+        statusDatang: created.statusDatang,
+        statusPulang: created.statusPulang,
+        jarakDatangM: created.jarakDatangM,
+        jarakPulangM: created.jarakPulangM,
+        datangMs: created.datangMs,
+        pulangMs: created.pulangMs,
+        updatedAt: created.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error POST /api/absensi/manual:', error);
+    res.status(500).json({ error: 'Gagal menyimpan input manual absensi.' });
+  }
+});
+
+// API: Edit Data Absensi (Khusus Admin)
+app.put('/api/absensi/:id', async (req, res) => {
+  try {
+    const adminPass = req.headers['x-admin-password'];
+    if (adminPass !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const existing = await Absensi.findById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'Data absensi tidak ditemukan.' });
+    }
+
+    const tanggal = String(req.body.tanggal || existing.tanggal).trim();
+    const jamDatang = normalizeTimeStr(req.body.jamDatang);
+    const jamPulang = normalizeTimeStr(req.body.jamPulang);
+
+    if (!tanggal || !jamDatang) {
+      return res.status(400).json({ error: 'Tanggal dan Jam Datang wajib diisi.' });
+    }
+
+    // Jika tanggal diubah, pastikan tidak bentrok dengan data lain milik karyawan yang sama
+    if (tanggal !== existing.tanggal) {
+      const clash = await Absensi.findOne({ tanggal, kode: existing.kode, _id: { $ne: existing._id } });
+      if (clash) {
+        return res.status(400).json({ error: `Sudah ada data absensi ${existing.nama} pada ${tanggal}.` });
+      }
+    }
+
+    const datangMs = wibDateTimeToMs(tanggal, jamDatang);
+    const pulangMs = jamPulang ? wibDateTimeToMs(tanggal, jamPulang) : null;
+    if (pulangMs !== null && datangMs !== null && pulangMs < datangMs) {
+      return res.status(400).json({ error: 'Jam Pulang tidak boleh lebih awal dari Jam Datang.' });
+    }
+
+    existing.tanggal = tanggal;
+    existing.jamDatang = jamDatang;
+    existing.jamPulang = jamPulang;
+    existing.statusDatang = evaluateStatusDatang(tanggal, jamDatang);
+    existing.statusPulang = jamPulang ? evaluateStatusPulang(tanggal, jamPulang) : '';
+    existing.datangMs = datangMs;
+    existing.pulangMs = pulangMs;
+    existing.updatedAt = Date.now();
+    await existing.save();
+
+    res.json({
+      message: `Data absensi ${existing.nama} berhasil diperbarui.`,
+      record: {
+        id: String(existing._id),
+        tanggal: existing.tanggal,
+        nama: existing.nama,
+        kode: existing.kode,
+        jamDatang: existing.jamDatang,
+        jamPulang: existing.jamPulang,
+        statusDatang: existing.statusDatang,
+        statusPulang: existing.statusPulang,
+        jarakDatangM: existing.jarakDatangM,
+        jarakPulangM: existing.jarakPulangM,
+        datangMs: existing.datangMs,
+        pulangMs: existing.pulangMs,
+        updatedAt: existing.updatedAt
+      }
+    });
+  } catch (error) {
+    console.error('Error PUT /api/absensi/:id:', error);
+    res.status(500).json({ error: 'Gagal memperbarui data absensi.' });
+  }
+});
+
 app.delete('/api/absensi/:id', async (req, res) => {
   try {
     const adminPass = req.headers['x-admin-password'];
