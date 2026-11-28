@@ -1063,8 +1063,8 @@ function getShiftBoundsSeconds(tanggal) {
 function evaluateStatusDatang(tanggal, jamDatang, approvedIzinKode = '') {
   const sec = timeStrToSeconds(jamDatang);
   if (sec === null) return '';
-  if (approvedIzinKode === 'IZ-SB') {
-    return sec > 13 * 3600 ? 'Telat (IZ-SB)' : 'Tepat Waktu (IZ-SB)';
+  if (approvedIzinKode === 'IZ-BB' || approvedIzinKode === 'IZ-SB') {
+    return sec > 13 * 3600 ? 'Telat (IZ-BB)' : 'Tepat Waktu (IZ-BB)';
   }
   const { startSec } = getShiftBoundsSeconds(tanggal);
   return sec > startSec ? 'Telat' : 'Tepat Waktu';
@@ -1073,8 +1073,8 @@ function evaluateStatusDatang(tanggal, jamDatang, approvedIzinKode = '') {
 function evaluateStatusPulang(tanggal, jamPulang, approvedIzinKode = '') {
   const sec = timeStrToSeconds(jamPulang);
   if (sec === null) return '';
-  if (approvedIzinKode === 'IZ-SS') {
-    return sec < 12 * 3600 ? 'Pulang Cepat (IZ-SS)' : 'Tepat Waktu (IZ-SS)';
+  if (approvedIzinKode === 'IZ-AB' || approvedIzinKode === 'IZ-SS') {
+    return sec < 12 * 3600 ? 'Pulang Cepat (IZ-AB)' : 'Tepat Waktu (IZ-AB)';
   }
   const { endSec } = getShiftBoundsSeconds(tanggal);
   return sec < endSec ? 'Pulang Cepat' : 'Tepat Waktu';
@@ -1086,7 +1086,7 @@ async function getApprovedIzinKode(kode, tanggal) {
     const found = await TimeOff.findOne({
       kode,
       status: 'Disetujui',
-      kodeRekap: { $in: ['IZ-SB', 'IZ-SS'] },
+      kodeRekap: { $in: ['IZ-BB', 'IZ-AB', 'IZ-SB', 'IZ-SS'] },
       tanggalMulai: { $lte: tanggal },
       tanggalSelesai: { $gte: tanggal }
     }).lean();
@@ -1652,9 +1652,9 @@ function computeTimeOffKodeRekap(jenis, subIzin) {
   if (jenis === 'Libur Masuk Minggu') return 'LMM';
   if (jenis === 'Sakit') return 'SK';
   if (jenis === 'Izin') {
-    if (subIzin === 'Sebelum Istirahat') return 'IZ-SB';
-    if (subIzin === 'Sesudah Istirahat') return 'IZ-SS';
-    return 'IZ-FT';
+    if (subIzin === 'Before Break' || subIzin === 'Sebelum Istirahat') return 'IZ-BB';
+    if (subIzin === 'After Break' || subIzin === 'Sesudah Istirahat') return 'IZ-AB';
+    return 'IZ-FD';
   }
   if (jenis === 'Request Absen') {
     return subIzin === 'Absen Pulang' ? 'REQ-P' : 'REQ-M';
@@ -1720,9 +1720,9 @@ app.post('/api/timeoff', async (req, res) => {
     let jamRequest = '';
     if (jenis === 'Izin') {
       subIzin = String(req.body.subIzin || '').trim();
-      const allowedSub = ['Full Time', 'Sebelum Istirahat', 'Sesudah Istirahat'];
+      const allowedSub = ['Full Day', 'Before Break', 'After Break', 'Full Time', 'Sebelum Istirahat', 'Sesudah Istirahat'];
       if (!allowedSub.includes(subIzin)) {
-        return res.status(400).json({ error: 'Pilih kategori Izin (Full Time, Sebelum Istirahat, atau Sesudah Istirahat).' });
+        return res.status(400).json({ error: 'Pilih kategori Izin (IZ-FD Full Day, IZ-BB Before Break, atau IZ-AB After Break).' });
       }
     } else if (jenis === 'Request Absen') {
       subIzin = String(req.body.subIzin || '').trim();
@@ -1893,7 +1893,7 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
       }
     }
 
-    if (['IZ-SB', 'IZ-SS'].includes(item.kodeRekap)) {
+    if (['IZ-BB', 'IZ-AB', 'IZ-SB', 'IZ-SS'].includes(item.kodeRekap)) {
       const affected = await Absensi.find({
         kode: item.kode,
         tanggal: { $gte: item.tanggalMulai, $lte: item.tanggalSelesai }
