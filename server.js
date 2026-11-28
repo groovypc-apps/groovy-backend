@@ -1952,6 +1952,48 @@ app.delete('/api/timeoff/:id', async (req, res) => {
   }
 });
 
+// Route PWA Manifest & Service Worker agar bisa Instal App di Layar Utama Android
+app.get('/manifest.json', (req, res) => {
+  res.setHeader('Content-Type', 'application/manifest+json');
+  res.json({
+    id: '/absensi',
+    name: 'Absensi Karyawan — Groovy Pet Center Radio 03',
+    short_name: 'Absensi Groovy',
+    description: 'Aplikasi Absensi Karyawan, Time Off, dan LMM Groovy Pet Center Radio 03',
+    start_url: '/absensi',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'portrait',
+    background_color: '#FFF9F5',
+    theme_color: '#C2185B',
+    icons: [
+      {
+        src: 'https://i.ibb.co.com/chNqgwX1/Logo-Groovy-Copy.png',
+        sizes: '192x192',
+        type: 'image/png',
+        purpose: 'any'
+      },
+      {
+        src: 'https://i.ibb.co.com/chNqgwX1/Logo-Groovy-Copy.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'any'
+      }
+    ]
+  });
+});
+
+app.get('/sw.js', (req, res) => {
+  res.setHeader('Content-Type', 'application/javascript');
+  res.send(`const CACHE_NAME = 'absensi-groovy-v1';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', (e) => {
+  if (e.request.method !== 'GET' || new URL(e.request.url).pathname.startsWith('/api/')) return;
+  e.respondWith(fetch(e.request).catch(() => caches.match(e.request)));
+});`);
+});
+
 // Route khusus untuk membuka halaman App Absensi di /absensi
 app.get('/absensi', (req, res) => {
   const candidates = ['app_absensi.html', 'app_absensi_mongodb.html'];
