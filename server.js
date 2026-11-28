@@ -828,38 +828,108 @@ app.delete('/api/enrollment-forms/:id', async (req, res) => {
 
 // ============================================================================
 // 10. SKEMA & ENDPOINT ABSENSI KARYAWAN (/api/absensi)
-//     Menyimpan absen datang/pulang 18 karyawan di collection 'absensi_karyawan'
-//     + Pengaturan GPS (radius 500m Groovy Pet Center Radio) & status tepat waktu/telat
+//     + CRUD Karyawan di MongoDB ('absensi_employees')
+//     + Selfie Datang/Pulang + Auto-Bersih Foto > 7 Hari
+//     + Pengaturan GPS (radius 500m) & Selfie + Jejak Audit (Manual/Diedit)
 // ============================================================================
 const ABSENSI_ADMIN_PASSWORD = process.env.ABSENSI_ADMIN_PASSWORD || 'Admin!2345';
 const DEFAULT_OFFICE_LAT = -6.2490868;
 const DEFAULT_OFFICE_LNG = 106.7929767;
 const DEFAULT_GPS_RADIUS = 500;
+const SELFIE_RETENTION_DAYS = 7;
 
-const ABSENSI_EMPLOYEES = [
-  { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR01', kategori: 'Kepala Toko' },
-  { nama: 'PAULUS KUAT', kode: 'PAULUSR02', kategori: 'Staff' },
-  { nama: 'KASRIN', kode: 'KASRINR03', kategori: 'Staff' },
-  { nama: 'WIKE', kode: 'WIKER04', kategori: 'Staff' },
-  { nama: 'YOEL ALIANSAH', kode: 'YOELR05', kategori: 'Staff' },
-  { nama: 'PRAYOGA', kode: 'YOGAR06', kategori: 'Staff' },
-  { nama: 'YUDI MAKATIPU', kode: 'YUDIR07', kategori: 'Staff' },
-  { nama: 'YOHANES YUNTORO', kode: 'TOROR08', kategori: 'Groomer' },
-  { nama: 'EDI WARSONO', kode: 'EDIR09', kategori: 'Groomer' },
-  { nama: 'RISMANTO', kode: 'ARISR10', kategori: 'Groomer' },
-  { nama: 'EDI HARDIANTO', kode: 'ANTOR11', kategori: 'Groomer' },
-  { nama: 'MOKO', kode: 'MOKOR12', kategori: 'Groomer' },
-  { nama: 'LAZUARDI', kode: 'ARDIR13', kategori: 'Groomer' },
-  { nama: 'ANGGI ERMAWAN', kode: 'ANGGIR14', kategori: 'Groomer' },
-  { nama: 'INDRA', kode: 'INDRAR15', kategori: 'Groomer' },
-  { nama: 'WAHYU', kode: 'WAHYUR16', kategori: 'Groomer' },
-  { nama: 'FADLI RAKA', kode: 'RAKAR17', kategori: 'Groomer' },
-  { nama: 'DIKI SUHARI', kode: 'DIKIR18', kategori: 'Groomer' }
+const DEFAULT_ABSENSI_EMPLOYEES = [
+  { nama: 'LIDYA TRIKURNIAWATI', kode: 'LIDYAR01', kategori: 'Kepala Toko', kuotaCuti: 12, urutan: 1 },
+  { nama: 'PAULUS KUAT', kode: 'PAULUSR02', kategori: 'Staff', kuotaCuti: 12, urutan: 2 },
+  { nama: 'KASRIN', kode: 'KASRINR03', kategori: 'Staff', kuotaCuti: 12, urutan: 3 },
+  { nama: 'WIKE', kode: 'WIKER04', kategori: 'Staff', kuotaCuti: 12, urutan: 4 },
+  { nama: 'YOEL ALIANSAH', kode: 'YOELR05', kategori: 'Staff', kuotaCuti: 12, urutan: 5 },
+  { nama: 'PRAYOGA', kode: 'YOGAR06', kategori: 'Staff', kuotaCuti: 12, urutan: 6 },
+  { nama: 'YUDI MAKATIPU', kode: 'YUDIR07', kategori: 'Staff', kuotaCuti: 12, urutan: 7 },
+  { nama: 'YOHANES YUNTORO', kode: 'TOROR08', kategori: 'Groomer', kuotaCuti: 12, urutan: 8 },
+  { nama: 'EDI WARSONO', kode: 'EDIR09', kategori: 'Groomer', kuotaCuti: 12, urutan: 9 },
+  { nama: 'RISMANTO', kode: 'ARISR10', kategori: 'Groomer', kuotaCuti: 12, urutan: 10 },
+  { nama: 'EDI HARDIANTO', kode: 'ANTOR11', kategori: 'Groomer', kuotaCuti: 12, urutan: 11 },
+  { nama: 'MOKO', kode: 'MOKOR12', kategori: 'Groomer', kuotaCuti: 12, urutan: 12 },
+  { nama: 'LAZUARDI', kode: 'ARDIR13', kategori: 'Groomer', kuotaCuti: 12, urutan: 13 },
+  { nama: 'ANGGI ERMAWAN', kode: 'ANGGIR14', kategori: 'Groomer', kuotaCuti: 12, urutan: 14 },
+  { nama: 'INDRA', kode: 'INDRAR15', kategori: 'Groomer', kuotaCuti: 12, urutan: 15 },
+  { nama: 'WAHYU', kode: 'WAHYUR16', kategori: 'Groomer', kuotaCuti: 12, urutan: 16 },
+  { nama: 'FADLI RAKA', kode: 'RAKAR17', kategori: 'Groomer', kuotaCuti: 12, urutan: 17 },
+  { nama: 'DIKI SUHARI', kode: 'DIKIR18', kategori: 'Groomer', kuotaCuti: 12, urutan: 18 }
 ];
+
+// Skema Karyawan Dinamis (CRUD di MongoDB)
+const absensiEmployeeSchema = new mongoose.Schema({
+  nama: { type: String, required: true },
+  kode: { type: String, required: true, unique: true, uppercase: true, trim: true },
+  kategori: { type: String, default: 'Staff', enum: ['Kepala Toko', 'Staff', 'Groomer'] },
+  kuotaCuti: { type: Number, default: 12 },
+  urutan: { type: Number, default: 99 },
+  aktif: { type: Boolean, default: true }
+}, { timestamps: true, collection: 'absensi_employees' });
+
+const AbsensiEmployee = mongoose.model('AbsensiEmployee', absensiEmployeeSchema);
+
+async function ensureSeededEmployees() {
+  try {
+    const count = await AbsensiEmployee.countDocuments();
+    if (count === 0) {
+      await AbsensiEmployee.insertMany(DEFAULT_ABSENSI_EMPLOYEES);
+      console.log('✅ Auto-seed 18 karyawan ke collection absensi_employees');
+    }
+  } catch (err) {
+    console.error('Seed absensi_employees error:', err.message);
+  }
+}
+
+async function getAllAbsensiEmployees() {
+  await ensureSeededEmployees();
+  const list = await AbsensiEmployee.find({ aktif: { $ne: false } }).sort({ urutan: 1, nama: 1 }).lean();
+  if (list.length > 0) {
+    return list.map((e, i) => ({
+      id: String(e._id),
+      nama: e.nama,
+      kode: e.kode,
+      kategori: e.kategori || 'Staff',
+      kuotaCuti: typeof e.kuotaCuti === 'number' ? e.kuotaCuti : 12,
+      urutan: typeof e.urutan === 'number' ? e.urutan : i + 1
+    }));
+  }
+  return DEFAULT_ABSENSI_EMPLOYEES.map((e, i) => ({ id: `def_${i}`, ...e }));
+}
+
+async function findAbsensiEmployeeAsync(rawKode) {
+  const clean = String(rawKode || '').trim().toUpperCase();
+  if (!clean) return null;
+  await ensureSeededEmployees();
+  const doc = await AbsensiEmployee.findOne({ kode: clean, aktif: { $ne: false } }).lean();
+  if (doc) {
+    return {
+      id: String(doc._id),
+      nama: doc.nama,
+      kode: doc.kode,
+      kategori: doc.kategori || 'Staff',
+      kuotaCuti: typeof doc.kuotaCuti === 'number' ? doc.kuotaCuti : 12
+    };
+  }
+  const fallback = DEFAULT_ABSENSI_EMPLOYEES.find((e) => e.kode.toUpperCase() === clean);
+  return fallback || null;
+}
+
+async function resolveEmployeeKategoriAsync(kode, nama) {
+  const byKode = await findAbsensiEmployeeAsync(kode);
+  if (byKode) return byKode.kategori;
+  const cleanNama = String(nama || '').trim().toUpperCase();
+  const all = await getAllAbsensiEmployees();
+  const byNama = all.find((e) => e.nama.toUpperCase() === cleanNama);
+  return byNama ? byNama.kategori : '';
+}
 
 const absensiSettingsSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true, default: 'main' },
   gpsEnabled: { type: Boolean, default: true },
+  selfieEnabled: { type: Boolean, default: true },
   officeLat: { type: Number, default: DEFAULT_OFFICE_LAT },
   officeLng: { type: Number, default: DEFAULT_OFFICE_LNG },
   radiusMeters: { type: Number, default: DEFAULT_GPS_RADIUS }
@@ -873,6 +943,7 @@ async function getAbsensiSettings() {
     cfg = await AbsensiSettings.create({
       key: 'main',
       gpsEnabled: true,
+      selfieEnabled: true,
       officeLat: DEFAULT_OFFICE_LAT,
       officeLng: DEFAULT_OFFICE_LNG,
       radiusMeters: DEFAULT_GPS_RADIUS
@@ -880,6 +951,7 @@ async function getAbsensiSettings() {
   }
   return {
     gpsEnabled: Boolean(cfg.gpsEnabled),
+    selfieEnabled: cfg.selfieEnabled === undefined ? true : Boolean(cfg.selfieEnabled),
     officeLat: typeof cfg.officeLat === 'number' ? cfg.officeLat : DEFAULT_OFFICE_LAT,
     officeLng: typeof cfg.officeLng === 'number' ? cfg.officeLng : DEFAULT_OFFICE_LNG,
     radiusMeters: typeof cfg.radiusMeters === 'number' && cfg.radiusMeters > 0 ? cfg.radiusMeters : DEFAULT_GPS_RADIUS
@@ -893,10 +965,15 @@ const absensiSchema = new mongoose.Schema({
   kategori: { type: String, default: '' },
   jamDatang: { type: String, default: '' },
   jamPulang: { type: String, default: '' },
-  statusDatang: { type: String, default: '' }, // 'Tepat Waktu' | 'Telat'
-  statusPulang: { type: String, default: '' }, // 'Tepat Waktu' | 'Pulang Cepat' | ''
+  statusDatang: { type: String, default: '' },
+  statusPulang: { type: String, default: '' },
   jarakDatangM: { type: Number, default: null },
   jarakPulangM: { type: Number, default: null },
+  fotoDatang: { type: String, default: '' },
+  fotoPulang: { type: String, default: '' },
+  isManual: { type: Boolean, default: false },
+  isEdited: { type: Boolean, default: false },
+  auditNote: { type: String, default: '' },
   datangMs: { type: Number, default: null },
   pulangMs: { type: Number, default: null },
   updatedAt: { type: Number, default: () => Date.now() }
@@ -924,8 +1001,47 @@ function getWibDateParts(date = new Date()) {
   const hour = parts.hour === '24' ? '00' : parts.hour;
   const tanggal = `${parts.year}-${parts.month}-${parts.day}`;
   const jam = `${hour}:${parts.minute}:${parts.second}`;
-  const dayOfWeek = new Date(`${tanggal}T12:00:00+07:00`).getDay(); // 0 = Minggu, 1-6 = Senin-Sabtu
+  const dayOfWeek = new Date(`${tanggal}T12:00:00+07:00`).getDay();
   return { tanggal, jam, dayOfWeek };
+}
+
+// Auto-bersih foto selfie > 7 hari (hanya hapus field foto; data absensi tetap permanen)
+let lastPhotoCleanupMs = 0;
+async function cleanupOldSelfies(days = SELFIE_RETENTION_DAYS, force = false) {
+  const nowMs = Date.now();
+  if (!force && nowMs - lastPhotoCleanupMs < 3600 * 1000) return 0;
+  lastPhotoCleanupMs = nowMs;
+  try {
+    const cutoffDate = new Date(nowMs - days * 86400000);
+    const { tanggal: cutoffKey } = getWibDateParts(cutoffDate);
+    const res = await Absensi.updateMany(
+      {
+        tanggal: { $lt: cutoffKey },
+        $or: [{ fotoDatang: { $ne: '' } }, { fotoPulang: { $ne: '' } }]
+      },
+      { $set: { fotoDatang: '', fotoPulang: '' } }
+    );
+    if (res.modifiedCount > 0) {
+      console.log(`🧹 Auto-bersih selfie > ${days} hari (< ${cutoffKey}): ${res.modifiedCount} baris dibersihkan.`);
+    }
+    return res.modifiedCount || 0;
+  } catch (err) {
+    console.error('Error cleanupOldSelfies:', err.message);
+    return 0;
+  }
+}
+
+// Jalankan pembersihan foto > 7 hari otomatis saat server siap & setiap 6 jam
+setTimeout(() => { cleanupOldSelfies(SELFIE_RETENTION_DAYS, true); }, 8000);
+setInterval(() => { cleanupOldSelfies(SELFIE_RETENTION_DAYS, true); }, 6 * 3600 * 1000);
+
+function sanitizeSelfieDataUrl(raw) {
+  const str = String(raw || '').trim();
+  if (!str) return '';
+  if (!str.startsWith('data:image/')) return '';
+  // Batasi maksimal ~150 KB base64 per foto demi keamanan 512 MB MongoDB
+  if (str.length > 180000) return '';
+  return str;
 }
 
 function timeStrToSeconds(timeStr) {
@@ -944,9 +1060,6 @@ function getShiftBoundsSeconds(tanggal) {
   return { startSec: 9 * 3600, endSec: 17 * 3600 };
 }
 
-// Jam istirahat 12:00-13:00:
-// IZ-SB (izin sebelum 12:00) -> masuk maks 13:00:00
-// IZ-SS (izin setelah 12:00) -> pulang min 12:00:00
 function evaluateStatusDatang(tanggal, jamDatang, approvedIzinKode = '') {
   const sec = timeStrToSeconds(jamDatang);
   if (sec === null) return '';
@@ -996,25 +1109,145 @@ function calcDistanceMeters(lat1, lng1, lat2, lng2) {
   return Math.round(R * c);
 }
 
-function findAbsensiEmployee(rawKode) {
-  const clean = String(rawKode || '').trim().toUpperCase();
-  return ABSENSI_EMPLOYEES.find((e) => e.kode.toUpperCase() === clean) || null;
+function mapAbsensiDoc(item, fallbackKat = '') {
+  return {
+    id: String(item._id),
+    tanggal: item.tanggal,
+    nama: item.nama,
+    kode: item.kode,
+    kategori: item.kategori || fallbackKat,
+    jamDatang: item.jamDatang || '',
+    jamPulang: item.jamPulang || '',
+    statusDatang: item.statusDatang || evaluateStatusDatang(item.tanggal, item.jamDatang),
+    statusPulang: item.statusPulang || evaluateStatusPulang(item.tanggal, item.jamPulang),
+    jarakDatangM: typeof item.jarakDatangM === 'number' ? item.jarakDatangM : null,
+    jarakPulangM: typeof item.jarakPulangM === 'number' ? item.jarakPulangM : null,
+    fotoDatang: item.fotoDatang || '',
+    fotoPulang: item.fotoPulang || '',
+    isManual: Boolean(item.isManual),
+    isEdited: Boolean(item.isEdited),
+    auditNote: item.auditNote || '',
+    datangMs: item.datangMs,
+    pulangMs: item.pulangMs,
+    updatedAt: item.updatedAt
+  };
 }
 
-function resolveEmployeeKategori(kode, nama) {
-  const byKode = findAbsensiEmployee(kode);
-  if (byKode) return byKode.kategori;
-  const cleanNama = String(nama || '').trim().toUpperCase();
-  const byNama = ABSENSI_EMPLOYEES.find((e) => e.nama.toUpperCase() === cleanNama);
-  return byNama ? byNama.kategori : '';
-}
+// CRUD Karyawan (/api/absensi/employees)
+app.get('/api/absensi/employees', async (req, res) => {
+  try {
+    const list = await getAllAbsensiEmployees();
+    res.json(list);
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal memuat daftar karyawan.' });
+  }
+});
 
+app.post('/api/absensi/employees', async (req, res) => {
+  try {
+    if (req.headers['x-admin-password'] !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const nama = String(req.body.nama || '').trim().toUpperCase();
+    const kode = String(req.body.kode || '').trim().toUpperCase();
+    const kategori = ['Kepala Toko', 'Staff', 'Groomer'].includes(req.body.kategori) ? req.body.kategori : 'Staff';
+    const kuotaCuti = Math.max(0, Math.min(30, Number(req.body.kuotaCuti ?? 12)));
+    if (!nama || !kode) {
+      return res.status(400).json({ error: 'Nama dan Kode Akses wajib diisi.' });
+    }
+    const exists = await AbsensiEmployee.findOne({ kode });
+    if (exists) {
+      return res.status(400).json({ error: `Kode akses "${kode}" sudah digunakan karyawan lain.` });
+    }
+    const count = await AbsensiEmployee.countDocuments();
+    const created = await AbsensiEmployee.create({
+      nama,
+      kode,
+      kategori,
+      kuotaCuti,
+      urutan: Number(req.body.urutan) || (count + 1),
+      aktif: true
+    });
+    res.status(201).json({
+      message: `Karyawan ${nama} berhasil ditambahkan.`,
+      employee: {
+        id: String(created._id),
+        nama: created.nama,
+        kode: created.kode,
+        kategori: created.kategori,
+        kuotaCuti: created.kuotaCuti,
+        urutan: created.urutan
+      }
+    });
+  } catch (error) {
+    console.error('Error POST /api/absensi/employees:', error);
+    res.status(500).json({ error: 'Gagal menambah karyawan baru.' });
+  }
+});
+
+app.put('/api/absensi/employees/:id', async (req, res) => {
+  try {
+    if (req.headers['x-admin-password'] !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const emp = await AbsensiEmployee.findById(req.params.id);
+    if (!emp) return res.status(404).json({ error: 'Karyawan tidak ditemukan.' });
+
+    const nama = String(req.body.nama || emp.nama).trim().toUpperCase();
+    const kode = String(req.body.kode || emp.kode).trim().toUpperCase();
+    const kategori = ['Kepala Toko', 'Staff', 'Groomer'].includes(req.body.kategori) ? req.body.kategori : emp.kategori;
+    const kuotaCuti = Math.max(0, Math.min(30, Number(req.body.kuotaCuti ?? emp.kuotaCuti ?? 12)));
+    const urutan = Number(req.body.urutan) || emp.urutan;
+
+    if (kode !== emp.kode) {
+      const clash = await AbsensiEmployee.findOne({ kode, _id: { $ne: emp._id } });
+      if (clash) return res.status(400).json({ error: `Kode akses "${kode}" sudah dipakai.` });
+    }
+
+    emp.nama = nama;
+    emp.kode = kode;
+    emp.kategori = kategori;
+    emp.kuotaCuti = kuotaCuti;
+    emp.urutan = urutan;
+    await emp.save();
+
+    res.json({
+      message: `Data karyawan ${emp.nama} berhasil diperbarui.`,
+      employee: {
+        id: String(emp._id),
+        nama: emp.nama,
+        kode: emp.kode,
+        kategori: emp.kategori,
+        kuotaCuti: emp.kuotaCuti,
+        urutan: emp.urutan
+      }
+    });
+  } catch (error) {
+    console.error('Error PUT /api/absensi/employees/:id:', error);
+    res.status(500).json({ error: 'Gagal memperbarui data karyawan.' });
+  }
+});
+
+app.delete('/api/absensi/employees/:id', async (req, res) => {
+  try {
+    if (req.headers['x-admin-password'] !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
+    }
+    const deleted = await AbsensiEmployee.findByIdAndDelete(req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Karyawan tidak ditemukan.' });
+    res.json({ ok: true, id: req.params.id, message: `Karyawan ${deleted.nama} dihapus.` });
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal menghapus karyawan.' });
+  }
+});
+
+// Pengaturan GPS & Selfie
 app.get('/api/absensi/settings', async (req, res) => {
   try {
     const cfg = await getAbsensiSettings();
     res.json(cfg);
   } catch (error) {
-    res.status(500).json({ error: 'Gagal memuat pengaturan GPS.' });
+    res.status(500).json({ error: 'Gagal memuat pengaturan GPS & Selfie.' });
   }
 });
 
@@ -1025,12 +1258,14 @@ app.put('/api/absensi/settings', async (req, res) => {
       return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
     }
     const gpsEnabled = Boolean(req.body.gpsEnabled);
+    const selfieEnabled = req.body.selfieEnabled === undefined ? true : Boolean(req.body.selfieEnabled);
     const radiusMeters = Math.max(50, Math.min(5000, Number(req.body.radiusMeters) || DEFAULT_GPS_RADIUS));
     const updated = await AbsensiSettings.findOneAndUpdate(
       { key: 'main' },
       {
         key: 'main',
         gpsEnabled,
+        selfieEnabled,
         officeLat: DEFAULT_OFFICE_LAT,
         officeLng: DEFAULT_OFFICE_LNG,
         radiusMeters
@@ -1039,35 +1274,42 @@ app.put('/api/absensi/settings', async (req, res) => {
     ).lean();
     res.json({
       gpsEnabled: Boolean(updated.gpsEnabled),
+      selfieEnabled: updated.selfieEnabled === undefined ? true : Boolean(updated.selfieEnabled),
       officeLat: updated.officeLat,
       officeLng: updated.officeLng,
       radiusMeters: updated.radiusMeters
     });
   } catch (error) {
     console.error('Error PUT /api/absensi/settings:', error);
-    res.status(500).json({ error: 'Gagal menyimpan pengaturan GPS.' });
+    res.status(500).json({ error: 'Gagal menyimpan pengaturan.' });
+  }
+});
+
+// Bersihkan foto selfie > 7 hari secara manual
+app.post('/api/absensi/cleanup-photos', async (req, res) => {
+  try {
+    if (req.headers['x-admin-password'] !== ABSENSI_ADMIN_PASSWORD) {
+      return res.status(401).json({ error: 'Akses ditolak.' });
+    }
+    const cleaned = await cleanupOldSelfies(SELFIE_RETENTION_DAYS, true);
+    res.json({ ok: true, cleaned, message: `${cleaned} foto selfie lebih dari ${SELFIE_RETENTION_DAYS} hari dibersihkan.` });
+  } catch (error) {
+    res.status(500).json({ error: 'Gagal membersihkan foto lama.' });
   }
 });
 
 app.get('/api/absensi', async (req, res) => {
   try {
+    cleanupOldSelfies(SELFIE_RETENTION_DAYS, false);
+    const allEmps = await getAllAbsensiEmployees();
     const list = await Absensi.find().sort({ updatedAt: -1 }).lean();
-    const mapped = list.map((item) => ({
-      id: String(item._id),
-      tanggal: item.tanggal,
-      nama: item.nama,
-      kode: item.kode,
-      kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
-      jamDatang: item.jamDatang || '',
-      jamPulang: item.jamPulang || '',
-      statusDatang: item.statusDatang || evaluateStatusDatang(item.tanggal, item.jamDatang),
-      statusPulang: item.statusPulang || evaluateStatusPulang(item.tanggal, item.jamPulang),
-      jarakDatangM: typeof item.jarakDatangM === 'number' ? item.jarakDatangM : null,
-      jarakPulangM: typeof item.jarakPulangM === 'number' ? item.jarakPulangM : null,
-      datangMs: item.datangMs,
-      pulangMs: item.pulangMs,
-      updatedAt: item.updatedAt
-    }));
+    const mapped = list.map((item) => {
+      const empMatch = allEmps.find(
+        (e) => e.kode.toUpperCase() === String(item.kode || '').toUpperCase() ||
+               e.nama.toUpperCase() === String(item.nama || '').trim().toUpperCase()
+      );
+      return mapAbsensiDoc(item, empMatch ? empMatch.kategori : '');
+    });
     res.json(mapped);
   } catch (error) {
     console.error('Error GET /api/absensi:', error);
@@ -1077,7 +1319,7 @@ app.get('/api/absensi', async (req, res) => {
 
 app.post('/api/absensi/datang', async (req, res) => {
   try {
-    const emp = findAbsensiEmployee(req.body.kode);
+    const emp = await findAbsensiEmployeeAsync(req.body.kode);
     if (!emp) {
       return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
     }
@@ -1096,6 +1338,11 @@ app.post('/api/absensi/datang', async (req, res) => {
           error: `Anda berada di luar radius absensi (${jarakM} m dari Groovy Pet Center Radio, maks ${cfg.radiusMeters} m).`
         });
       }
+    }
+
+    const fotoDatang = sanitizeSelfieDataUrl(req.body.foto);
+    if (cfg.selfieEnabled && !fotoDatang) {
+      return res.status(400).json({ error: 'Foto selfie wajib diambil untuk melakukan Absen Datang.' });
     }
 
     const now = new Date();
@@ -1123,29 +1370,21 @@ app.post('/api/absensi/datang', async (req, res) => {
       statusPulang: '',
       jarakDatangM: jarakM,
       jarakPulangM: null,
+      fotoDatang,
+      fotoPulang: '',
+      isManual: false,
+      isEdited: false,
+      auditNote: '',
       datangMs: nowMs,
       pulangMs: null,
       updatedAt: nowMs
     });
 
+    cleanupOldSelfies(SELFIE_RETENTION_DAYS, false);
+
     res.status(201).json({
       message: `${emp.nama} berhasil Absen Datang (${jam} • ${statusDatang})`,
-      record: {
-        id: String(created._id),
-        tanggal: created.tanggal,
-        nama: created.nama,
-        kode: created.kode,
-        kategori: created.kategori || resolveEmployeeKategori(created.kode, created.nama),
-        jamDatang: created.jamDatang,
-        jamPulang: created.jamPulang,
-        statusDatang: created.statusDatang,
-        statusPulang: created.statusPulang,
-        jarakDatangM: created.jarakDatangM,
-        jarakPulangM: created.jarakPulangM,
-        datangMs: created.datangMs,
-        pulangMs: created.pulangMs,
-        updatedAt: created.updatedAt
-      }
+      record: mapAbsensiDoc(created, emp.kategori)
     });
   } catch (error) {
     console.error('Error POST /api/absensi/datang:', error);
@@ -1155,7 +1394,7 @@ app.post('/api/absensi/datang', async (req, res) => {
 
 app.post('/api/absensi/pulang', async (req, res) => {
   try {
-    const emp = findAbsensiEmployee(req.body.kode);
+    const emp = await findAbsensiEmployeeAsync(req.body.kode);
     if (!emp) {
       return res.status(404).json({ error: 'Kode akses tidak ditemukan. Periksa kembali kode Anda.' });
     }
@@ -1174,6 +1413,11 @@ app.post('/api/absensi/pulang', async (req, res) => {
           error: `Anda berada di luar radius absensi (${jarakM} m dari Groovy Pet Center Radio, maks ${cfg.radiusMeters} m).`
         });
       }
+    }
+
+    const fotoPulang = sanitizeSelfieDataUrl(req.body.foto);
+    if (cfg.selfieEnabled && !fotoPulang) {
+      return res.status(400).json({ error: 'Foto selfie wajib diambil untuk melakukan Absen Pulang.' });
     }
 
     const now = new Date();
@@ -1199,28 +1443,14 @@ app.post('/api/absensi/pulang', async (req, res) => {
     existing.jamPulang = jam;
     existing.statusPulang = statusPulang;
     existing.jarakPulangM = jarakM;
+    existing.fotoPulang = fotoPulang;
     existing.pulangMs = nowMs;
     existing.updatedAt = nowMs;
     await existing.save();
 
     res.json({
       message: `${emp.nama} berhasil Absen Pulang (${jam} • ${statusPulang})`,
-      record: {
-        id: String(existing._id),
-        tanggal: existing.tanggal,
-        nama: existing.nama,
-        kode: existing.kode,
-        kategori: existing.kategori || resolveEmployeeKategori(existing.kode, existing.nama),
-        jamDatang: existing.jamDatang,
-        jamPulang: existing.jamPulang,
-        statusDatang: existing.statusDatang || evaluateStatusDatang(existing.tanggal, existing.jamDatang),
-        statusPulang: existing.statusPulang,
-        jarakDatangM: existing.jarakDatangM,
-        jarakPulangM: existing.jarakPulangM,
-        datangMs: existing.datangMs,
-        pulangMs: existing.pulangMs,
-        updatedAt: existing.updatedAt
-      }
+      record: mapAbsensiDoc(existing, emp.kategori)
     });
   } catch (error) {
     console.error('Error POST /api/absensi/pulang:', error);
@@ -1252,14 +1482,14 @@ function wibDateTimeToMs(tanggal, jam) {
   return Number.isNaN(dt.getTime()) ? null : dt.getTime();
 }
 
-// API: Input Manual Absensi (Khusus Admin)
+// API: Input Manual Absensi (Khusus Admin) + Audit Note
 app.post('/api/absensi/manual', async (req, res) => {
   try {
     const adminPass = req.headers['x-admin-password'];
     if (adminPass !== ABSENSI_ADMIN_PASSWORD) {
       return res.status(401).json({ error: 'Akses ditolak. Password admin tidak valid.' });
     }
-    const emp = findAbsensiEmployee(req.body.kode);
+    const emp = await findAbsensiEmployeeAsync(req.body.kode);
     if (!emp) {
       return res.status(400).json({ error: 'Karyawan tidak valid.' });
     }
@@ -1284,6 +1514,9 @@ app.post('/api/absensi/manual', async (req, res) => {
       return res.status(400).json({ error: 'Jam Pulang tidak boleh lebih awal dari Jam Datang.' });
     }
 
+    const { tanggal: nowTgl, jam: nowJam } = getWibDateParts(new Date());
+    const approvedIzin = await getApprovedIzinKode(emp.kode, tanggal);
+
     const created = await Absensi.create({
       tanggal,
       nama: emp.nama,
@@ -1291,10 +1524,15 @@ app.post('/api/absensi/manual', async (req, res) => {
       kategori: emp.kategori,
       jamDatang,
       jamPulang,
-      statusDatang: evaluateStatusDatang(tanggal, jamDatang, await getApprovedIzinKode(emp.kode, tanggal)),
-      statusPulang: jamPulang ? evaluateStatusPulang(tanggal, jamPulang, await getApprovedIzinKode(emp.kode, tanggal)) : '',
+      statusDatang: evaluateStatusDatang(tanggal, jamDatang, approvedIzin),
+      statusPulang: jamPulang ? evaluateStatusPulang(tanggal, jamPulang, approvedIzin) : '',
       jarakDatangM: null,
       jarakPulangM: null,
+      fotoDatang: '',
+      fotoPulang: '',
+      isManual: true,
+      isEdited: false,
+      auditNote: `Input Manual Admin (${nowTgl} ${nowJam.slice(0, 5)} WIB)`,
       datangMs,
       pulangMs,
       updatedAt: Date.now()
@@ -1302,22 +1540,7 @@ app.post('/api/absensi/manual', async (req, res) => {
 
     res.status(201).json({
       message: `Input manual absensi ${emp.nama} (${tanggal}) berhasil disimpan.`,
-      record: {
-        id: String(created._id),
-        tanggal: created.tanggal,
-        nama: created.nama,
-        kode: created.kode,
-        kategori: created.kategori || resolveEmployeeKategori(created.kode, created.nama),
-        jamDatang: created.jamDatang,
-        jamPulang: created.jamPulang,
-        statusDatang: created.statusDatang,
-        statusPulang: created.statusPulang,
-        jarakDatangM: created.jarakDatangM,
-        jarakPulangM: created.jarakPulangM,
-        datangMs: created.datangMs,
-        pulangMs: created.pulangMs,
-        updatedAt: created.updatedAt
-      }
+      record: mapAbsensiDoc(created, emp.kategori)
     });
   } catch (error) {
     console.error('Error POST /api/absensi/manual:', error);
@@ -1325,7 +1548,7 @@ app.post('/api/absensi/manual', async (req, res) => {
   }
 });
 
-// API: Edit Data Absensi (Khusus Admin)
+// API: Edit Data Absensi (Khusus Admin) + Audit Note
 app.put('/api/absensi/:id', async (req, res) => {
   try {
     const adminPass = req.headers['x-admin-password'];
@@ -1345,7 +1568,6 @@ app.put('/api/absensi/:id', async (req, res) => {
       return res.status(400).json({ error: 'Tanggal dan Jam Datang wajib diisi.' });
     }
 
-    // Jika tanggal diubah, pastikan tidak bentrok dengan data lain milik karyawan yang sama
     if (tanggal !== existing.tanggal) {
       const clash = await Absensi.findOne({ tanggal, kode: existing.kode, _id: { $ne: existing._id } });
       if (clash) {
@@ -1359,12 +1581,16 @@ app.put('/api/absensi/:id', async (req, res) => {
       return res.status(400).json({ error: 'Jam Pulang tidak boleh lebih awal dari Jam Datang.' });
     }
 
+    const { tanggal: nowTgl, jam: nowJam } = getWibDateParts(new Date());
+    const approvedIzinEdit = await getApprovedIzinKode(existing.kode, tanggal);
+
     existing.tanggal = tanggal;
     existing.jamDatang = jamDatang;
     existing.jamPulang = jamPulang;
-    const approvedIzinEdit = await getApprovedIzinKode(existing.kode, tanggal);
     existing.statusDatang = evaluateStatusDatang(tanggal, jamDatang, approvedIzinEdit);
     existing.statusPulang = jamPulang ? evaluateStatusPulang(tanggal, jamPulang, approvedIzinEdit) : '';
+    existing.isEdited = true;
+    existing.auditNote = `Diedit Admin (${nowTgl} ${nowJam.slice(0, 5)} WIB)`;
     existing.datangMs = datangMs;
     existing.pulangMs = pulangMs;
     existing.updatedAt = Date.now();
@@ -1372,22 +1598,7 @@ app.put('/api/absensi/:id', async (req, res) => {
 
     res.json({
       message: `Data absensi ${existing.nama} berhasil diperbarui.`,
-      record: {
-        id: String(existing._id),
-        tanggal: existing.tanggal,
-        nama: existing.nama,
-        kode: existing.kode,
-        kategori: existing.kategori || resolveEmployeeKategori(existing.kode, existing.nama),
-        jamDatang: existing.jamDatang,
-        jamPulang: existing.jamPulang,
-        statusDatang: existing.statusDatang,
-        statusPulang: existing.statusPulang,
-        jarakDatangM: existing.jarakDatangM,
-        jarakPulangM: existing.jarakPulangM,
-        datangMs: existing.datangMs,
-        pulangMs: existing.pulangMs,
-        updatedAt: existing.updatedAt
-      }
+      record: mapAbsensiDoc(existing, await resolveEmployeeKategoriAsync(existing.kode, existing.nama))
     });
   } catch (error) {
     console.error('Error PUT /api/absensi/:id:', error);
@@ -1413,17 +1624,16 @@ app.delete('/api/absensi/:id', async (req, res) => {
 });
 
 // ============================================================================
-// 11. SKEMA & ENDPOINT REQUEST TIME OFF (/api/timeoff)
-//     CT (Cuti Tahunan), LMM (Libur Masuk Minggu), SK (Sakit), Izin (3 sub-tipe)
+// 11. SKEMA & ENDPOINT REQUEST TIME OFF, LMM & REQUEST ABSEN (/api/timeoff)
 //     Approval hanya diperbolehkan untuk kategori 'Kepala Toko'
 // ============================================================================
 const timeOffSchema = new mongoose.Schema({
   kode: { type: String, required: true, index: true },
   nama: { type: String, required: true },
   kategori: { type: String, default: '' },
-  jenis: { type: String, required: true }, // 'Cuti Tahunan' | 'Libur Masuk Minggu' | 'Sakit' | 'Izin'
-  subIzin: { type: String, default: '' }, // 'Full Time' | 'Sebelum Istirahat' | 'Sesudah Istirahat'
-  kodeRekap: { type: String, required: true }, // 'CT' | 'LMM' | 'SK' | 'IZ-FT' | 'IZ-SB' | 'IZ-SS'
+  jenis: { type: String, required: true },
+  subIzin: { type: String, default: '' },
+  kodeRekap: { type: String, required: true },
   tanggalMulai: { type: String, required: true },
   tanggalSelesai: { type: String, required: true },
   jumlahHari: { type: Number, default: 1 },
@@ -1461,35 +1671,42 @@ function calcInclusiveDays(startDate, endDate) {
 
 app.get('/api/timeoff', async (req, res) => {
   try {
+    const allEmps = await getAllAbsensiEmployees();
     const list = await TimeOff.find().sort({ createdAtMs: -1 }).lean();
-    const mapped = list.map((item) => ({
-      id: String(item._id),
-      kode: item.kode,
-      nama: item.nama,
-      kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
-      jenis: item.jenis,
-      subIzin: item.subIzin || '',
-      kodeRekap: item.kodeRekap,
-      tanggalMulai: item.tanggalMulai,
-      tanggalSelesai: item.tanggalSelesai,
-      jumlahHari: item.jumlahHari || 1,
-      jamRequest: item.jamRequest || '',
-      alasan: item.alasan || '',
-      status: item.status || 'Menunggu',
-      approvedBy: item.approvedBy || '',
-      approvedAt: item.approvedAt || '',
-      createdAtMs: item.createdAtMs || Date.now()
-    }));
+    const mapped = list.map((item) => {
+      const empMatch = allEmps.find(
+        (e) => e.kode.toUpperCase() === String(item.kode || '').toUpperCase() ||
+               e.nama.toUpperCase() === String(item.nama || '').trim().toUpperCase()
+      );
+      return {
+        id: String(item._id),
+        kode: item.kode,
+        nama: item.nama,
+        kategori: item.kategori || (empMatch ? empMatch.kategori : ''),
+        jenis: item.jenis,
+        subIzin: item.subIzin || '',
+        kodeRekap: item.kodeRekap,
+        tanggalMulai: item.tanggalMulai,
+        tanggalSelesai: item.tanggalSelesai,
+        jumlahHari: item.jumlahHari || 1,
+        jamRequest: item.jamRequest || '',
+        alasan: item.alasan || '',
+        status: item.status || 'Menunggu',
+        approvedBy: item.approvedBy || '',
+        approvedAt: item.approvedAt || '',
+        createdAtMs: item.createdAtMs || Date.now()
+      };
+    });
     res.json(mapped);
   } catch (error) {
     console.error('Error GET /api/timeoff:', error);
-    res.status(500).json({ error: 'Gagal memuat data pengajuan Time Off.' });
+    res.status(500).json({ error: 'Gagal memuat data pengajuan.' });
   }
 });
 
 app.post('/api/timeoff', async (req, res) => {
   try {
-    const emp = findAbsensiEmployee(req.body.kode);
+    const emp = await findAbsensiEmployeeAsync(req.body.kode);
     if (!emp) {
       return res.status(404).json({ error: 'Kode akses karyawan tidak ditemukan.' });
     }
@@ -1571,18 +1788,17 @@ app.post('/api/timeoff', async (req, res) => {
     });
   } catch (error) {
     console.error('Error POST /api/timeoff:', error);
-    res.status(500).json({ error: 'Gagal mengirim pengajuan Time Off.' });
+    res.status(500).json({ error: 'Gagal mengirim pengajuan.' });
   }
 });
 
-// Approval hanya untuk Kepala Toko
 app.put('/api/timeoff/:id/approve', async (req, res) => {
   try {
     const approverKode = req.headers['x-approver-kode'];
-    const approver = findAbsensiEmployee(approverKode);
+    const approver = await findAbsensiEmployeeAsync(approverKode);
     if (!approver || approver.kategori !== 'Kepala Toko') {
       return res.status(403).json({
-        error: 'Akses ditolak. Hanya Kepala Toko yang dapat menyetujui atau menolak pengajuan Time Off.'
+        error: 'Akses ditolak. Hanya Kepala Toko yang dapat menyetujui atau menolak pengajuan.'
       });
     }
 
@@ -1593,7 +1809,7 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
 
     const item = await TimeOff.findById(req.params.id);
     if (!item) {
-      return res.status(404).json({ error: 'Data pengajuan Time Off tidak ditemukan.' });
+      return res.status(404).json({ error: 'Data pengajuan tidak ditemukan.' });
     }
 
     const { tanggal, jam } = getWibDateParts(new Date());
@@ -1602,11 +1818,11 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
     item.approvedAt = `${tanggal} ${jam.slice(0, 5)} WIB`;
     await item.save();
 
-    // Jika Request Absen disetujui Kepala Toko, otomatis simpan/perbarui ke data absensi karyawan
     if (item.jenis === 'Request Absen' && newStatus === 'Disetujui' && item.jamRequest) {
       const tgl = item.tanggalMulai;
       const approvedIzin = await getApprovedIzinKode(item.kode, tgl);
       let existingAbsen = await Absensi.findOne({ tanggal: tgl, kode: item.kode });
+      const auditTxt = `Via Request Absen (Disetujui ${approver.nama})`;
 
       if (item.subIzin === 'Absen Datang') {
         const datangMs = wibDateTimeToMs(tgl, item.jamRequest);
@@ -1615,6 +1831,8 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
           existingAbsen.jamDatang = item.jamRequest;
           existingAbsen.statusDatang = stDatang;
           existingAbsen.datangMs = datangMs;
+          existingAbsen.isManual = true;
+          existingAbsen.auditNote = auditTxt;
           existingAbsen.updatedAt = Date.now();
           await existingAbsen.save();
         } else {
@@ -1622,13 +1840,18 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
             tanggal: tgl,
             nama: item.nama,
             kode: item.kode,
-            kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
+            kategori: item.kategori || await resolveEmployeeKategoriAsync(item.kode, item.nama),
             jamDatang: item.jamRequest,
             jamPulang: '',
             statusDatang: stDatang,
             statusPulang: '',
             jarakDatangM: null,
             jarakPulangM: null,
+            fotoDatang: '',
+            fotoPulang: '',
+            isManual: true,
+            isEdited: false,
+            auditNote: auditTxt,
             datangMs,
             pulangMs: null,
             updatedAt: Date.now()
@@ -1641,6 +1864,8 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
           existingAbsen.jamPulang = item.jamRequest;
           existingAbsen.statusPulang = stPulang;
           existingAbsen.pulangMs = pulangMs;
+          existingAbsen.isEdited = true;
+          existingAbsen.auditNote = auditTxt;
           existingAbsen.updatedAt = Date.now();
           await existingAbsen.save();
         } else {
@@ -1648,13 +1873,18 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
             tanggal: tgl,
             nama: item.nama,
             kode: item.kode,
-            kategori: item.kategori || resolveEmployeeKategori(item.kode, item.nama),
+            kategori: item.kategori || await resolveEmployeeKategoriAsync(item.kode, item.nama),
             jamDatang: '',
             jamPulang: item.jamRequest,
             statusDatang: '',
             statusPulang: stPulang,
             jarakDatangM: null,
             jarakPulangM: null,
+            fotoDatang: '',
+            fotoPulang: '',
+            isManual: true,
+            isEdited: false,
+            auditNote: auditTxt,
             datangMs: null,
             pulangMs,
             updatedAt: Date.now()
@@ -1663,7 +1893,6 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
       }
     }
 
-    // Perbarui otomatis status absensi yang sudah ada pada rentang tanggal IZ-SB / IZ-SS
     if (['IZ-SB', 'IZ-SS'].includes(item.kodeRekap)) {
       const affected = await Absensi.find({
         kode: item.kode,
@@ -1700,14 +1929,14 @@ app.put('/api/timeoff/:id/approve', async (req, res) => {
     });
   } catch (error) {
     console.error('Error PUT /api/timeoff/:id/approve:', error);
-    res.status(500).json({ error: 'Gagal memproses persetujuan Time Off.' });
+    res.status(500).json({ error: 'Gagal memproses persetujuan.' });
   }
 });
 
 app.delete('/api/timeoff/:id', async (req, res) => {
   try {
     const adminPass = req.headers['x-admin-password'];
-    const approver = findAbsensiEmployee(req.headers['x-approver-kode']);
+    const approver = await findAbsensiEmployeeAsync(req.headers['x-approver-kode']);
     const isAllowed = adminPass === ABSENSI_ADMIN_PASSWORD || (approver && approver.kategori === 'Kepala Toko');
     if (!isAllowed) {
       return res.status(401).json({ error: 'Akses ditolak.' });
@@ -1719,7 +1948,7 @@ app.delete('/api/timeoff/:id', async (req, res) => {
     res.json({ ok: true, id: req.params.id });
   } catch (error) {
     console.error('Error DELETE /api/timeoff/:id:', error);
-    res.status(500).json({ error: 'Gagal menghapus pengajuan Time Off.' });
+    res.status(500).json({ error: 'Gagal menghapus pengajuan.' });
   }
 });
 
